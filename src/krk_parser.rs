@@ -70,7 +70,6 @@ pub fn build_hierarchy(entries: Vec<TaxonEntry>) -> Vec<TaxonEntry> {
 }
 
 pub fn parse_kraken2_report(file_path: &str) -> (KrakenReport, f64) {
-    let start = Instant::now();
     let file = File::open(file_path).expect("Failed to open file");
     let reader = BufReader::new(file);
     let mut entries: Vec<TaxonEntry> = reader.lines()
@@ -88,7 +87,6 @@ pub fn parse_kraken2_report(file_path: &str) -> (KrakenReport, f64) {
     let root = build_hierarchy(entries);
     let hierarchy_time = hierarchy_start.elapsed().as_secs_f64();
 
-    let total_time = start.elapsed().as_secs_f64();
 
     (KrakenReport {
         unclassified,
@@ -103,7 +101,7 @@ pub fn write_json_report(report: &KrakenReport, output_file: &str) -> std::io::R
     Ok(())
 }
 
-pub fn verify_hierarchy(entries: &[TaxonEntry]) -> bool {
+pub fn _verify_hierarchy(entries: &[TaxonEntry]) -> bool {
     let root_sum: f32 = entries.iter()
         .map(|entry| entry.percentage)
         .sum();
@@ -113,9 +111,9 @@ pub fn verify_hierarchy(entries: &[TaxonEntry]) -> bool {
     result
 }
 
-fn print_hierarchy(entries: &[TaxonEntry], level: usize) {
+fn _print_hierarchy(entries: &[TaxonEntry], level: usize) {
     for entry in entries {
         println!("{}{}: {} ({}%)", "  ".repeat(level), entry.name, entry.clade_fragments, entry.percentage);
-        print_hierarchy(&entry.children, level + 1);
+        _print_hierarchy(&entry.children, level + 1);
     }
 }

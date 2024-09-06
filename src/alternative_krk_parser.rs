@@ -48,10 +48,10 @@ pub fn build_hierarchy(entries: Vec<TaxonEntry>) -> Vec<TaxonEntry> {
     let mut stack: Vec<TaxonEntry> = Vec::new();
     let mut result: Vec<TaxonEntry> = Vec::new();
 
-    for mut node in entries {
+    for node in entries {
         while let Some(last) = stack.last() {
             if last.level >= node.level {
-                let mut popped = stack.pop().unwrap();
+                let popped = stack.pop().unwrap();
                 if let Some(parent) = stack.last_mut() {
                     parent.children.push(popped);
                 } else {
@@ -104,7 +104,6 @@ pub fn build_hierarchy_unsafe(entries: Vec<TaxonEntry>) -> Vec<TaxonEntry> {
 }
 
 pub fn parse_kraken2_report(file_path: &str) -> (KrakenReport, f64) {
-    let start = Instant::now();
     let file = File::open(file_path).expect("Failed to open file");
     let reader = BufReader::with_capacity(1024 * 1024, file);
     let mut entries: Vec<TaxonEntry> = reader.split(b'\n')
@@ -122,8 +121,6 @@ pub fn parse_kraken2_report(file_path: &str) -> (KrakenReport, f64) {
     // let root = build_hierarchy(entries);
     let root = build_hierarchy_unsafe(entries);
     let hierarchy_time = hierarchy_start.elapsed().as_secs_f64();
-
-    let total_time = start.elapsed().as_secs_f64();
 
     (KrakenReport {
         unclassified,
