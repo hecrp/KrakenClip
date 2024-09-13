@@ -63,3 +63,22 @@ Analyze module:
                 --tax-id <TAXON_ID>    Search for a specific taxon by ID
    ```
 
+Extract module:
+
+   ```
+    kraken2-parser-extract 
+    Extract sequences based on Kraken2 results
+
+    USAGE:
+        kraken2-parser extract [OPTIONS] --output <OUTPUT> --taxids <TAXIDS> <SEQUENCE> <LOG>
+
+    ARGS:
+        <SEQUENCE>    Input FASTA/FASTQ file
+        <LOG>         Kraken2 log file
+
+    OPTIONS:
+        -h, --help               Print help information
+        -o, --output <OUTPUT>    Output file for extracted sequences
+            --report <REPORT>    Kraken2 report file
+            --taxids <TAXIDS>    Comma-separated list of taxids to extract
+    ```

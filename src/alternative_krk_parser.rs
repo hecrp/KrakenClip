@@ -87,7 +87,7 @@ pub fn build_hierarchy_unsafe(entries: Vec<TaxonEntry>) -> Vec<TaxonEntry> {
             stack.pop();
         }
 
-        let new_entry = if let Some(&parent) = stack.last() {
+        let new_entry: &mut TaxonEntry = if let Some(&parent) = stack.last() {
             unsafe {
                 (*parent).children.push(entry);
                 (*parent).children.last_mut().unwrap()
@@ -119,7 +119,7 @@ pub fn parse_kraken2_report(file_path: &str) -> (KrakenReport, f64) {
 
     let hierarchy_start = Instant::now();
     // let root = build_hierarchy(entries);
-    let root = build_hierarchy_unsafe(entries);
+    let root: Vec<TaxonEntry> = build_hierarchy_unsafe(entries);
     let hierarchy_time = hierarchy_start.elapsed().as_secs_f64();
 
     (KrakenReport {
