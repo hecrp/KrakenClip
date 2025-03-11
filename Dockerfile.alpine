@@ -1,0 +1,39 @@
+# First stage: Build the application
+FROM rust:alpine as builder
+
+WORKDIR /app
+
+# Install build dependencies
+RUN apk add --no-cache musl-dev libc-dev
+
+# Copy the Cargo files for dependency caching
+COPY Cargo.toml Cargo.lock ./
+
+# Create a dummy main.rs to build dependencies
+RUN mkdir -p src && \
+    echo "fn main() {}" > src/main.rs && \
+    cargo build --release && \
+    rm -rf src
+
+# Copy the actual source code
+COPY src/ src/
+
+# Build the application with optimization for size
+RUN cargo build --release --features lto
+
+# Second stage: Create the minimal runtime image
+FROM alpine:latest
+
+WORKDIR /app
+
+# Install necessary runtime libraries (minimal)
+RUN apk add --no-cache ca-certificates
+
+# Copy the binary from the builder stage
+COPY --from=builder /app/target/release/kraken2-parser /app/kraken2-parser
+
+# Set the binary as the entrypoint
+ENTRYPOINT ["/app/kraken2-parser"]
+
+# Default command (can be overridden)
+CMD ["--help"] 
