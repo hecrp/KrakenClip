@@ -38,7 +38,7 @@ You can also use the provided Dockerfile to build and run Kraken2 Toolkit in a c
 
 2. Or for an even smaller image using Alpine Linux:
    ```
-   docker build -f Dockerfile.alpine -t kraken2-toolkit:alpine .
+   docker build -f Dockerfile -t kraken2-toolkit .
    ```
 
 3. Run the Docker container:
@@ -102,17 +102,9 @@ ARGS:
 OPTIONS:
     -h, --help                Print help information
     -o, --output <OUTPUT>     Output file for extracted sequences
-        --report <REPORT>     Kraken2 report file (optional but recommended)
+        --report <REPORT>     Kraken2 report file (optional and under development)
         --taxids <TAXIDS>     Comma-separated list of taxids to extract
 ```
-
-The Extract module requires both the Kraken log file and optionally the report file for different purposes:
-
-1. **Kraken log file (required)**: Maps individual sequences to their assigned taxon IDs
-2. **Kraken report file (optional)**: Provides the complete taxonomic hierarchy, enabling more sophisticated extractions like:
-   - Extracting all descendants of a taxon (not just directly assigned sequences)
-   - Extracting sequences by complete clades (e.g., entire family or genus)
-   - Verifying hierarchical relationships between requested taxa
 
 ### Generate Test Data Module
 

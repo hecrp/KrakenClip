@@ -1,24 +1,24 @@
 # First stage: Build the application
-FROM rust:latest as builder
+FROM rust:alpine as builder
 
 WORKDIR /app
 
-# Copy all source code first
+# Install build dependencies
+RUN apk add --no-cache musl-dev libc-dev
+
+# Copy all source code
 COPY . .
 
-# Build the application
+# Build the application with optimization for size
 RUN cargo build --release
 
 # Second stage: Create the minimal runtime image
-FROM debian:bookworm-slim
+FROM alpine:latest
 
 WORKDIR /app
 
-# Install necessary runtime libraries
-RUN apt-get update && \
-    apt-get install -y --no-install-recommends \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Install necessary runtime libraries (minimal)
+RUN apk add --no-cache ca-certificates
 
 # Copy the binary from the builder stage
 COPY --from=builder /app/target/release/kraken2-parser /app/kraken2-parser
