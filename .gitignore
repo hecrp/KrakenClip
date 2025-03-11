@@ -6,6 +6,11 @@ Cargo.lock
 metagen_data/
 *.json
 data/
+NOTES.md
+
+# Benchmark files and results
+benches/
+benchmarks/
 
 # Python
 python_parser/

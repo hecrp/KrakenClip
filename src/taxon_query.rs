@@ -7,26 +7,27 @@ pub struct TaxonInfo {
     pub children: Vec<TaxonEntry>,
 }
 
-pub fn find_taxon_info(entries: &[TaxonEntry], target_tax_id: u64) -> Option<TaxonInfo> {
-    fn find_taxon_recursive(entries: &[TaxonEntry], target_tax_id: u64, parents: &mut Vec<TaxonEntry>) -> Option<TaxonInfo> {
-        for entry in entries {
-            if entry.taxon_id == target_tax_id {
-                let mut all_children = Vec::new();
-                collect_children(&entry.children, &mut all_children);
-                
-                return Some(TaxonInfo {
-                    taxon: entry.clone(),
-                    parents: parents.clone(),
-                    children: all_children,
-                });
-            }
+pub fn find_taxon_info(root: &TaxonEntry, target_tax_id: u64) -> Option<TaxonInfo> {
+    fn find_taxon_recursive(entry: &TaxonEntry, target_tax_id: u64, parents: &mut Vec<TaxonEntry>) -> Option<TaxonInfo> {
+        if entry.taxon_id == target_tax_id {
+            let mut all_children = Vec::new();
+            collect_children(&entry.children, &mut all_children);
             
+            return Some(TaxonInfo {
+                taxon: entry.clone(),
+                parents: parents.clone(),
+                children: all_children,
+            });
+        }
+        
+        for child in &entry.children {
             parents.push(entry.clone());
-            if let Some(info) = find_taxon_recursive(&entry.children, target_tax_id, parents) {
+            if let Some(info) = find_taxon_recursive(child, target_tax_id, parents) {
                 return Some(info);
             }
             parents.pop();
         }
+        
         None
     }
 
@@ -38,7 +39,7 @@ pub fn find_taxon_info(entries: &[TaxonEntry], target_tax_id: u64) -> Option<Tax
     }
 
     let mut parents = Vec::new();
-    find_taxon_recursive(entries, target_tax_id, &mut parents)
+    find_taxon_recursive(root, target_tax_id, &mut parents)
 }
 
 pub fn print_taxon_info(info: &TaxonInfo) {

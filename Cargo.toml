@@ -13,6 +13,7 @@ memchr = "2.5"
 fast-float = "0.2"
 memory-stats = "1.0.0"
 colored = "2.0"
+rand = "0.8.5"
 
 [dev-dependencies]
 criterion = "0.3"

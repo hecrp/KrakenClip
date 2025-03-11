@@ -1,6 +1,5 @@
 use clap::{App, Arg, SubCommand};
 use crate::krk_parser::{self, KrakenReport, TaxonEntry};
-use crate::alternative_krk_parser;
 use std::time::Instant;
 use memory_stats::memory_stats;
 use std::fs::File;
@@ -9,6 +8,7 @@ use crate::taxon_query::{find_taxon_info, print_taxon_info};
 use std::collections::HashSet;
 use crate::logkrk_parser;
 use crate::sequence_processor;
+use crate::generate_test_data;
 
 pub fn run_cli() {
     let matches = App::new("Kraken2 Toolkit")
@@ -40,15 +40,7 @@ pub fn run_cli() {
             .arg(Arg::with_name("INFO")
                 .help("Display taxonomic or aggregated information")
                 .long("info")
-                .takes_value(false))
-            .arg(Arg::with_name("ALTERNATIVE")
-                .help("Use alternative parser")
-                .long("alternative")
-                .takes_value(false))
-            .arg(Arg::with_name("COMPARE")
-                .help("Compare both parsers")
-                .long("compare")
-                .takes_value(true)))
+                .takes_value(false)))
         .subcommand(SubCommand::with_name("extract")
             .about("Extract sequences based on Kraken2 results")
             .arg(Arg::with_name("SEQUENCE")
@@ -74,6 +66,24 @@ pub fn run_cli() {
                 .required(true)
                 .long("taxids")
                 .takes_value(true)))
+        .subcommand(SubCommand::with_name("generate-test-data")
+            .about("Generate test data for performance testing")
+            .arg(Arg::with_name("OUTPUT")
+                .help("Output file for generated test data")
+                .required(true)
+                .short('o')
+                .long("output")
+                .takes_value(true))
+            .arg(Arg::with_name("LINES")
+                .help("Number of lines to generate")
+                .long("lines")
+                .default_value("100000")
+                .takes_value(true))
+            .arg(Arg::with_name("TYPE")
+                .help("Type of test data to generate (wide, deep, fragments, dense, etc.)")
+                .long("type")
+                .default_value("random")
+                .takes_value(true)))
         .get_matches();
 
     match matches.subcommand() {
@@ -83,6 +93,9 @@ pub fn run_cli() {
         Some(("extract", extract_matches)) => {
             run_extract(extract_matches);
         }
+        Some(("generate-test-data", generate_matches)) => {
+            run_generate(generate_matches);
+        }
         _ => {
             println!("Please specify a subcommand. Use --help for more information.");
         }
@@ -91,35 +104,43 @@ pub fn run_cli() {
 
 fn run_analyze(matches: &clap::ArgMatches) {
     let input_file = matches.value_of("REPORT").unwrap();
+    
+    let start = Instant::now();
+    let parse_start = Instant::now();
+    
+    // Obtener uso de memoria inicial
+    let start_memory = memory_stats().map(|usage: memory_stats::MemoryStats| usage.physical_mem).unwrap_or(0);
+    
+    let (report, hierarchy_time) = krk_parser::parse_kraken2_report(input_file);
+    
+    let parse_time = parse_start.elapsed().as_secs_f64() - hierarchy_time;
+    let total_time = start.elapsed().as_secs_f64();
+    
+    // Obtener uso de memoria final
+    let end_memory = memory_stats().map(|usage: memory_stats::MemoryStats| usage.physical_mem).unwrap_or(0);
+    let memory_used = end_memory - start_memory;
 
-    if matches.is_present("COMPARE") {
-        let iterations = matches.value_of("COMPARE")
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(1);
-        compare_parsers(input_file, matches, iterations);
-    } else {
-        let (report, hierarchy_time) = if matches.is_present("ALTERNATIVE") {
-            alternative_krk_parser::parse_kraken2_report(input_file)
+    println!("Hierarchy build time: {:.6} seconds", hierarchy_time);
+    
+    // Añadir métricas de rendimiento adicionales
+    println!("Total time: {:.6} seconds", total_time);
+    println!("File parsing time: {:.6} seconds", parse_time);
+    println!("Memory usage: {} bytes", memory_used);
+    
+    process_report(matches, &report);
+
+    if let Some(taxon_id) = matches.value_of("TAXON_ID").and_then(|id| id.parse().ok()) {
+        if let Some(taxon_info) = find_taxon_info(&report.root, taxon_id) {
+            print_taxon_info(&taxon_info);
         } else {
-            krk_parser::parse_kraken2_report(input_file)
-        };
-
-        println!("Hierarchy build time: {:.6} seconds", hierarchy_time);
-        process_report(matches, &report);
-
-        if let Some(taxon_id) = matches.value_of("TAXON_ID").and_then(|id| id.parse().ok()) {
-            if let Some(taxon_info) = find_taxon_info(&report.root, taxon_id) {
-                print_taxon_info(&taxon_info);
-            } else {
-                println!("Taxon with ID {} not found", taxon_id);
-            }
+            println!("Taxon with ID {} not found", taxon_id);
         }
+    }
 
-        if let Some(json_output) = matches.value_of("JSON") {
-            match krk_parser::write_json_report(&report, json_output) {
-                Ok(_) => println!("JSON report written to {}", json_output),
-                Err(e) => eprintln!("Error writing JSON report: {}", e),
-            }
+    if let Some(json_output) = matches.value_of("JSON") {
+        match krk_parser::write_json_report(&report, json_output) {
+            Ok(_) => println!("JSON report written to {}", json_output),
+            Err(e) => eprintln!("Error writing JSON report: {}", e),
         }
     }
 }
@@ -144,140 +165,19 @@ fn run_extract(matches: &clap::ArgMatches) {
     }
 }
 
-fn compare_parsers(input_file: &str, matches: &clap::ArgMatches, iterations: u32) {
-    println!("Comparing parsers ({} iterations)...", iterations);
-
-    // Función para medir el uso de memoria
-    let get_memory_usage = || {
-        memory_stats().map(|usage: memory_stats::MemoryStats| usage.physical_mem).unwrap_or(0)
-    };
-
-    let mut original_stats = (0.0, 0.0, 0.0, 0.0, 0);
-    let mut alternative_stats = (0.0, 0.0, 0.0, 0.0, 0);
-
-    for _ in 0..iterations {
-        // Original parser
-        let start_memory = get_memory_usage();
-        let start = Instant::now();
+fn run_generate(matches: &clap::ArgMatches) {
+    let output_file = matches.value_of("OUTPUT").unwrap();
+    
+    let num_lines = matches.value_of("LINES")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100_000);
         
-        let file = File::open(input_file).expect("Failed to open file");
-        let reader = BufReader::new(file);
-        let parse_start = Instant::now();
-        let entries: Vec<TaxonEntry> = reader.lines()
-            .filter_map(Result::ok)
-            .filter_map(|line| krk_parser::parse_line(&line))
-            .collect();
-        let parse_time = parse_start.elapsed().as_secs_f64();
-        
-        let hierarchy_start = Instant::now();
-        let root = krk_parser::build_hierarchy(entries);
-        let hierarchy_time = hierarchy_start.elapsed().as_secs_f64();
-        
-        let original_report = KrakenReport {
-            unclassified: None,
-            root,
-        };
-        
-        let original_total_time = start.elapsed().as_secs_f64();
-        let end_memory = get_memory_usage();
-
-        // Alternative parser
-        let alt_start_memory = get_memory_usage();
-        let start = Instant::now();
-        
-        let file = File::open(input_file).expect("Failed to open file");
-        let reader = BufReader::with_capacity(1024 * 1024, file);
-        let parse_start = Instant::now();
-        let entries: Vec<TaxonEntry> = reader.split(b'\n')
-            .filter_map(Result::ok)
-            .filter_map(|line| alternative_krk_parser::parse_line(&line))
-            .collect();
-        let parse_time_alt = parse_start.elapsed().as_secs_f64();
-        
-        let hierarchy_start = Instant::now();
-        let root = alternative_krk_parser::build_hierarchy(entries);
-        let hierarchy_time_alt = hierarchy_start.elapsed().as_secs_f64();
-        
-        let alternative_report = KrakenReport {
-            unclassified: None,
-            root,
-        };
-        
-        let alternative_total_time = start.elapsed().as_secs_f64();
-        let alt_end_memory = get_memory_usage();
-
-        // JSON writing time measurement
-        let mut json_time_original = 0.0;
-        let mut json_time_alternative = 0.0;
-
-        if matches.is_present("JSON") {
-            if let Some(output_file) = matches.value_of("OUTPUT") {
-                let original_output = format!("{}_original.json", output_file);
-                let alternative_output = format!("{}_alternative.json", output_file);
-
-                let json_start = Instant::now();
-                let _ = krk_parser::write_json_report(&original_report, &original_output);
-                json_time_original = json_start.elapsed().as_secs_f64();
-
-                let json_start = Instant::now();
-                let _ = krk_parser::write_json_report(&alternative_report, &alternative_output);
-                json_time_alternative = json_start.elapsed().as_secs_f64();
-            }
-        }
-
-        original_stats.0 += original_total_time;
-        original_stats.1 += parse_time;
-        original_stats.2 += hierarchy_time;
-        original_stats.3 += json_time_original;
-        original_stats.4 += end_memory - start_memory;
-
-        alternative_stats.0 += alternative_total_time;
-        alternative_stats.1 += parse_time_alt;
-        alternative_stats.2 += hierarchy_time_alt;
-        alternative_stats.3 += json_time_alternative;
-        alternative_stats.4 += alt_end_memory - alt_start_memory;
+    let data_type = matches.value_of("TYPE").unwrap_or("random");
+    
+    match generate_test_data::generate_data(output_file, num_lines, data_type) {
+        Ok(_) => println!("Test data generated successfully"),
+        Err(e) => eprintln!("Error generating test data: {}", e),
     }
-
-    // Calculate averages
-    let iterations_f64 = iterations as f64;
-    original_stats = (
-        original_stats.0 / iterations_f64,
-        original_stats.1 / iterations_f64,
-        original_stats.2 / iterations_f64,
-        original_stats.3 / iterations_f64,
-        original_stats.4 / iterations as usize,
-    );
-
-    alternative_stats = (
-        alternative_stats.0 / iterations_f64,
-        alternative_stats.1 / iterations_f64,
-        alternative_stats.2 / iterations_f64,
-        alternative_stats.3 / iterations_f64,
-        alternative_stats.4 / iterations as usize,
-    );
-
-    // Print results
-    println!("\nOriginal parser (average of {} iterations):", iterations);
-    println!("  Total time: {:.6} seconds", original_stats.0);
-    println!("  File parsing time: {:.6} seconds", original_stats.1);
-    println!("  Hierarchy build time: {:.6} seconds", original_stats.2);
-    println!("  JSON writing time: {:.6} seconds", original_stats.3);
-    println!("  Memory usage: {} bytes", original_stats.4);
-
-    println!("\nAlternative parser (average of {} iterations):", iterations);
-    println!("  Total time: {:.6} seconds", alternative_stats.0);
-    println!("  File parsing time: {:.6} seconds", alternative_stats.1);
-    println!("  Hierarchy build time: {:.6} seconds", alternative_stats.2);
-    println!("  JSON writing time: {:.6} seconds", alternative_stats.3);
-    println!("  Memory usage: {} bytes", alternative_stats.4);
-
-    // Compare results
-    println!("\nComparison (Alternative vs Original):");
-    println!("  Total time: {:.2}%", (alternative_stats.0 / original_stats.0) * 100.0);
-    println!("  File parsing time: {:.2}%", (alternative_stats.1 / original_stats.1) * 100.0);
-    println!("  Hierarchy build time: {:.2}%", (alternative_stats.2 / original_stats.2) * 100.0);
-    println!("  JSON writing time: {:.2}%", (alternative_stats.3 / original_stats.3) * 100.0);
-    println!("  Memory usage: {:.2}%", (alternative_stats.4 as f64 / original_stats.4 as f64) * 100.0);
 }
 
 fn process_report(matches: &clap::ArgMatches, _report: &krk_parser::KrakenReport) {
@@ -308,3 +208,4 @@ fn apply_filter(_report: &krk_parser::KrakenReport, filter: &str) {
     println!("Applying filter: {}", filter);
     // Implement filter functionality
 }
+
