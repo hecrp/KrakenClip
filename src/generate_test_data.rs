@@ -25,17 +25,6 @@ impl Default for GeneratorParams {
     }
 }
 
-/// Generate test data with a specific type
-/// 
-/// # Parameters
-/// 
-/// * `output_file` - Output file path
-/// * `num_lines` - Approximate number of lines to generate
-/// * `data_type` - Type of data to generate: "wide", "deep", "fragments", "dense", "lines", "random", "complex", etc.
-/// 
-/// # Return
-/// 
-/// Result indicating success or error
 pub fn generate_data(output_file: &str, num_lines: usize, data_type: &str) -> Result<(), Box<dyn std::error::Error>> {
     let mut params = GeneratorParams {
         output_file: output_file.to_string(),

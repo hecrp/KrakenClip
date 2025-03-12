@@ -6,38 +6,43 @@ use fast_float;
 use std::io::Write;
 use std::path::Path;
 
-// Optimized constants
-const BUFFER_SIZE: usize = 512 * 1024; // 512KB is an optimal middle ground
+// Optimized constants for performance-critical operations
+// Buffer size is carefully chosen for optimal memory usage vs. throughput
+const BUFFER_SIZE: usize = 512 * 1024; // 512KB balances memory usage and read performance
+// Raw byte literals are used for faster comparison operations (avoids UTF-8 decoding)
 const TAB_CHAR: u8 = b'\t';
 const NL_CHAR: u8 = b'\n';
 const SPACE_CHAR: u8 = b' ';
 const NEWLINE_CHAR: u8 = b'\n';
 
-// Structure representing a taxonomy node
+/// Structure representing a node in the taxonomic tree
+/// Each node contains comprehensive information about a specific taxon
 #[derive(Debug, Clone)]
 pub struct TaxonEntry {
-    pub percentage: f32,   // Percentage of reads
-    pub clade_reads: u64,  // Reads assigned to this clade
-    pub direct_reads: u64, // Reads directly assigned
-    pub rank: String,      // Taxonomic rank
-    pub taxid: u32,        // Taxon ID
-    pub name: String,      // Taxon name
-    pub depth: usize,      // Depth in the tree
-    pub children: Vec<TaxonEntry>, // Child nodes
-    // Additional fields for compatibility
-    pub level: usize,      // Hierarchy level (same as depth)
-    pub taxon_id: u64,     // Taxon ID (same as taxid but as u64)
-    pub clade_fragments: u64, // Alias for clade_reads
-    pub direct_fragments: u64, // Alias for direct_reads
-    pub rank_code: String, // Alias for rank
+    pub percentage: f32,   // Percentage of reads in the sample assigned to this clade
+    pub clade_reads: u64,  // Total reads assigned to this clade and its descendants
+    pub direct_reads: u64, // Reads assigned directly to this taxon (not descendants)
+    pub rank: String,      // Taxonomic rank (e.g., "P" for phylum, "G" for genus)
+    pub taxid: u32,        // NCBI Taxonomy identifier as u32 for memory efficiency
+    pub name: String,      // Scientific name of the taxon
+    pub depth: usize,      // Depth in the taxonomy tree (number of ancestors)
+    pub children: Vec<TaxonEntry>, // Child nodes (descendant taxa)
+    
+    // Additional fields for API compatibility with other formats
+    pub level: usize,      // Hierarchy level (same as depth, maintained for compatibility)
+    pub taxon_id: u64,     // Taxon ID as u64 (for compatibility with external systems)
+    pub clade_fragments: u64, // Alias for clade_reads (terminology varies by tool)
+    pub direct_fragments: u64, // Alias for direct_reads (terminology varies by tool)
+    pub rank_code: String, // Alias for rank (maintained for compatibility)
 }
 
-// Main structure for the Kraken report
+/// Main structure for representing a complete Kraken report
+/// Contains the full taxonomic hierarchy and lookup maps
 #[derive(Debug)]
 pub struct KrakenReport {
-    pub root: TaxonEntry,
-    pub taxon_map: std::collections::HashMap<u32, usize>,
-    pub unclassified: Option<TaxonEntry>, // Additional field for unclassified data
+    pub root: TaxonEntry,  // Root node of the taxonomic tree
+    pub taxon_map: std::collections::HashMap<u32, usize>, // Map from taxids to indices for fast lookup
+    pub unclassified: Option<TaxonEntry>, // Special node for unclassified sequences (if present)
 }
 
 impl TaxonEntry {
@@ -47,12 +52,12 @@ impl TaxonEntry {
             percentage,
             clade_reads,
             direct_reads,
-            rank: rank.clone(),
+            rank: rank.clone(), // Clone is needed as we use the value twice
             taxid,
             name,
             depth,
             children: Vec::new(),
-            // Initialize additional fields
+            // Initialize additional fields for compatibility
             level: depth,
             taxon_id: taxid as u64,
             clade_fragments: clade_reads,
@@ -61,32 +66,41 @@ impl TaxonEntry {
         }
     }
     
-    // Add a child to this node
+    /// Add a child node to this taxon
+    /// This establishes the parent-child relationship in the taxonomy tree
     fn add_child(&mut self, child: TaxonEntry) {
         self.children.push(child);
     }
 }
 
 impl Default for KrakenReport {
+    /// Create a default empty Kraken report with just a root node
+    /// This implements the Default trait for KrakenReport
     fn default() -> Self {
         let mut report = Self {
             root: TaxonEntry::new(0.0, 0, 0, "R".to_string(), 1, "root".to_string(), 0),
             taxon_map: std::collections::HashMap::new(),
             unclassified: None,
         };
-        report.taxon_map.insert(1, 0); // Root always at position 0
+        report.taxon_map.insert(1, 0); // Root always at position 0 (taxid 1 = root in NCBI taxonomy)
         report
     }
 }
 
-// String cache to avoid memory duplication
+/// String cache to avoid memory duplication for common rank codes
+/// This significantly reduces memory usage for large reports
 struct StringCache {
     rank_codes: Vec<String>,
 }
 
 impl StringCache {
+    /// Create a new string cache pre-populated with common rank codes
+    /// 
+    /// # Performance optimization
+    /// Pre-populating with common values avoids allocations for frequent codes
     fn new() -> Self {
-        // Pre-populate with common rank codes
+        // Pre-populate with common rank codes used in taxonomy
+        // D=Domain, P=Phylum, C=Class, O=Order, F=Family, G=Genus, S=Species, U=Unclassified
         let mut rank_codes = Vec::with_capacity(10);
         for code in ["D", "P", "C", "O", "F", "G", "S", "U"].iter() {
             rank_codes.push((*code).to_string());
@@ -94,7 +108,19 @@ impl StringCache {
         Self { rank_codes }
     }
 
+    /// Get a rank code string from cache or add if not present
+    /// 
+    /// # Arguments
+    /// * `code` - The rank code to retrieve or add
+    /// 
+    /// # Returns
+    /// A clone of the cached string (reduces total allocations)
+    /// 
+    /// # Performance characteristics
+    /// Uses linear search which is efficient for small collections like this
+    /// For the small set of rank codes, this outperforms a HashMap due to lower overhead
     fn get_rank_code(&mut self, code: &str) -> String {
+        // First check if code exists in cache to avoid allocation
         for existing in &self.rank_codes {
             if existing == code {
                 return existing.clone();
@@ -110,49 +136,59 @@ impl StringCache {
 // Highly optimized line parser using pointers and avoiding unnecessary allocations
 #[inline(always)]
 pub fn parse_line(line: &[u8], string_cache: &mut StringCache) -> Option<TaxonEntry> {
-    // Use fast tab search with memchr
+    // Use fast tab search with memchr for vectorized byte searching
+    // This is significantly faster than manual iteration
     let tab_positions: Vec<usize> = memchr_iter(TAB_CHAR, line).take(5).collect();
     if tab_positions.len() < 5 {
-        return None;
+        return None; // Not enough fields
     }
     
-    // Optimization: calculate field positions directly
+    // Optimization: calculate field positions directly from tab positions
+    // Avoids string splits which would create new allocations
     let field_starts = [0, tab_positions[0] + 1, tab_positions[1] + 1, tab_positions[2] + 1, tab_positions[3] + 1, tab_positions[4] + 1];
     let field_ends = [tab_positions[0], tab_positions[1], tab_positions[2], tab_positions[3], tab_positions[4], line.len()];
     
-    // Fast calculation of indentation level
+    // Fast calculation of indentation level (two spaces per level)
+    // This determines the taxon's position in the hierarchy
     let name_start = field_starts[5];
     let mut level = 0;
     let mut i = name_start;
     
-    // Count spaces quickly in pairs
+    // Count spaces quickly in pairs (Kraken uses two spaces per level)
+    // This optimization is faster than counting individual spaces
     while i + 1 < line.len() && line[i] == SPACE_CHAR && line[i + 1] == SPACE_CHAR {
         level += 1;
         i += 2;
     }
     
-    // Extract name efficiently
+    // Extract name efficiently by slicing the original buffer
+    // Avoids allocating a new string until necessary
     let name_bytes = &line[name_start + level * 2..];
     let name = std::str::from_utf8(name_bytes).unwrap_or("").trim();
     
-    // Fast parsing of numeric values without unnecessary allocations
+    // Fast parsing of numeric values with specialized parsers
+    // Using fast_float for improved float parsing performance
     let percentage_bytes = &line[field_starts[0]..field_ends[0]];
     let percentage = fast_float::parse::<f32, _>(std::str::from_utf8(percentage_bytes).unwrap_or("0.0")).unwrap_or(0.0);
     
+    // Parse integer counts directly from byte slices
     let clade_bytes = &line[field_starts[1]..field_ends[1]];
     let clade_fragments = std::str::from_utf8(clade_bytes).unwrap_or("0").parse::<u64>().unwrap_or(0);
     
     let direct_bytes = &line[field_starts[2]..field_ends[2]];
     let direct_fragments = std::str::from_utf8(direct_bytes).unwrap_or("0").parse::<u64>().unwrap_or(0);
     
-    // Optimization for rank codes (avoid string duplication)
+    // Optimization for rank codes using string cache to avoid duplication
+    // This significantly reduces memory usage for large reports with many identical ranks
     let rank_bytes = &line[field_starts[3]..field_ends[3]];
     let rank_str = std::str::from_utf8(rank_bytes).unwrap_or("").trim();
     let rank_code = string_cache.get_rank_code(rank_str);
     
+    // Parse taxon ID
     let taxon_bytes = &line[field_starts[4]..field_ends[4]];
     let taxon_id = std::str::from_utf8(taxon_bytes).unwrap_or("0").parse::<u64>().unwrap_or(0);
     
+    // Construct and return the taxon entry
     Some(TaxonEntry {
         level,
         percentage,
@@ -177,29 +213,40 @@ pub fn build_hierarchy_optimized(entries: Vec<TaxonEntry>) -> Vec<TaxonEntry> {
     }
     
     // Pre-allocate space for the final hierarchy
+    // Most reports have few top-level nodes compared to total entries
     let mut hierarchy = Vec::with_capacity(entries.len() / 8 + 1);
     
-    // Use a stack with pre-allocated capacity (hierarchy rarely exceeds 20 levels)
+    // Use a stack with pre-allocated capacity
+    // Taxonomic hierarchies rarely exceed 20 levels in depth
     let mut stack: Vec<TaxonEntry> = Vec::with_capacity(20);
     
     for mut entry in entries {
+        // Process entries based on their level in the hierarchy
+        // This implements a non-recursive tree construction algorithm
+        
         // Optimization to avoid chain reactions of push/pop
+        // Pop entries from stack until we find the parent for current entry
         while !stack.is_empty() && stack.last().unwrap().level >= entry.level {
             let popped = stack.pop().unwrap();
             if let Some(parent) = stack.last_mut() {
-                // Reserve capacity if needed to avoid relocations
+                // Add the popped entry as a child of its parent
+                
+                // Reserve capacity if needed to avoid reallocations during push
+                // Most taxonomic nodes have relatively few direct children
                 if parent.children.is_empty() {
                     parent.children.reserve(4); // Most nodes have fewer than 4 children
                 }
                 parent.children.push(popped);
             } else {
+                // If stack is empty, this is a root-level node
                 hierarchy.push(popped);
             }
         }
         stack.push(entry);
     }
     
-    // Process remaining elements in the stack
+    // Process remaining elements in the stack (cleanup phase)
+    // This handles nodes that remain after all entries are processed
     while let Some(entry) = stack.pop() {
         if let Some(parent) = stack.last_mut() {
             parent.children.push(entry);
@@ -211,17 +258,19 @@ pub fn build_hierarchy_optimized(entries: Vec<TaxonEntry>) -> Vec<TaxonEntry> {
     hierarchy
 }
 
-// Optimized buffer for block reading
+/// Custom buffer implementation for optimized file reading
+/// Provides block-based reading with minimal allocations
 struct OptimizedBuffer {
-    buffer: Box<[u8]>,
-    pos: usize,
-    cap: usize,
-    file: File,
+    buffer: Box<[u8]>,  // Fixed-size buffer using Box for heap allocation
+    pos: usize,         // Current position in the buffer
+    cap: usize,         // Current capacity (filled bytes) in the buffer
+    file: File,         // Source file
 }
 
 impl OptimizedBuffer {
     fn new(file: File) -> Self {
         Self {
+            // Use boxed slice for more efficient memory layout
             buffer: vec![0; BUFFER_SIZE].into_boxed_slice(),
             pos: 0,
             cap: 0,
@@ -238,14 +287,17 @@ impl OptimizedBuffer {
     fn read_line(&mut self, line_buffer: &mut Vec<u8>) -> std::io::Result<bool> {
         line_buffer.clear();
         
+        // Check if buffer needs to be filled
         if self.pos >= self.cap && self.fill_buffer()? == 0 {
-            return Ok(false);
+            return Ok(false); // EOF
         }
         
         loop {
+            // Fast scan for newline character in current buffer
             let mut i = self.pos;
             while i < self.cap {
                 if self.buffer[i] == NEWLINE_CHAR {
+                    // Found line ending - extract the line
                     line_buffer.extend_from_slice(&self.buffer[self.pos..i]);
                     self.pos = i + 1;
                     return Ok(true);
@@ -258,6 +310,7 @@ impl OptimizedBuffer {
             
             // Fill the buffer again
             if self.fill_buffer()? == 0 {
+                // EOF - return true if we read any data
                 return Ok(!line_buffer.is_empty());
             }
         }
@@ -267,49 +320,63 @@ impl OptimizedBuffer {
 // Main analysis function with block processing
 pub fn parse_kraken2_report(file_path: &str) -> (KrakenReport, f64) {
     let file = File::open(file_path).expect("Failed to open file");
+    
+    // Estimate size for pre-allocation based on file size
+    // Average line length in Kraken reports is ~50 bytes
     let file_size = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
     
     let mut buffer = OptimizedBuffer::new(file);
     
+    // Start timing the parsing process (excluding file opening)
     let start_time = Instant::now();
     let mut string_cache = StringCache::new();
+    
+    // Pre-allocate line buffer with reasonable size
     let mut line_buffer = Vec::with_capacity(1024);
+    
+    // Pre-allocate entries vector based on estimated line count
     let mut entries = Vec::with_capacity(file_size / 50); // Approximate estimation
     
+    // Parse file line by line
     while buffer.read_line(&mut line_buffer).unwrap_or(false) {
         if let Some(entry) = parse_line(&line_buffer, &mut string_cache) {
             entries.push(entry);
         }
     }
     
-    // Optimized hierarchy construction
+    // Build hierarchical representation from flat entries
     let hierarchy = build_hierarchy_optimized(entries);
     
     // Determine if there's an "unclassified" node
+    // This is typically the first node in Kraken reports
     let unclassified = if !hierarchy.is_empty() && hierarchy[0].level == 0 && hierarchy[0].name == "unclassified" {
         Some(hierarchy[0].clone())
     } else {
         None
     };
     
-    // Get root node
+    // Get root node (typically the second node if unclassified is present)
     let root = if hierarchy.len() > 1 || (hierarchy.len() == 1 && unclassified.is_some()) {
         let root_index = if unclassified.is_some() { 1 } else { 0 };
         if root_index < hierarchy.len() {
             hierarchy[root_index].clone()
         } else {
+            // Fallback to default root if hierarchy structure is unexpected
             TaxonEntry::new(0.0, 0, 0, "R".to_string(), 1, "root".to_string(), 0)
         }
     } else {
+        // Create default root if no suitable node found
         TaxonEntry::new(0.0, 0, 0, "R".to_string(), 1, "root".to_string(), 0)
     };
     
-    // Build taxon map
+    // Build a map from taxon IDs to indices for fast lookups
     let mut taxon_map = std::collections::HashMap::new();
     build_taxon_map(&root, &mut taxon_map, 0);
     
+    // Calculate total parsing time
     let duration = start_time.elapsed().as_secs_f64();
     
+    // Return the constructed report and parsing duration
     (KrakenReport {
         unclassified,
         root,
@@ -319,8 +386,10 @@ pub fn parse_kraken2_report(file_path: &str) -> (KrakenReport, f64) {
 
 // Build taxon map for quick access by ID
 fn build_taxon_map(entry: &TaxonEntry, map: &mut std::collections::HashMap<u32, usize>, index: usize) -> usize {
+    // Insert current taxon ID with its index
     map.insert(entry.taxid, index);
     
+    // Recursively process all children
     let mut next_index = index + 1;
     for child in &entry.children {
         next_index = build_taxon_map(child, map, next_index);
@@ -334,6 +403,7 @@ pub fn write_json_report(report: &KrakenReport, output_path: &str) -> std::io::R
     
     // Recursive function to convert a node to JSON format
     fn node_to_json(node: &TaxonEntry) -> serde_json::Value {
+        // Create a JSON object with all relevant fields
         let mut json = serde_json::json!({
             "name": node.name,
             "taxid": node.taxid,
@@ -362,10 +432,11 @@ pub fn write_json_report(report: &KrakenReport, output_path: &str) -> std::io::R
         json["unclassified"] = node_to_json(unclassified);
     }
     
-    // Write to file
+    // Write to file using buffered I/O for performance
     let file = std::fs::File::create(Path::new(output_path))?;
     let mut writer = std::io::BufWriter::new(file);
     
+    // Use pretty printing for human-readable output
     serde_json::to_writer_pretty(&mut writer, &json)?;
     writer.flush()?;
     
@@ -405,6 +476,11 @@ mod tests {
                 name: "Root".to_string(),
                 depth: 0,
                 children: Vec::new(),
+                // Add missing fields for the test (these would normally be set by new())
+                taxon_id: 1,
+                clade_reads: 1000,
+                direct_reads: 0,
+                rank: "D".to_string(),
             },
             TaxonEntry {
                 level: 1,
@@ -416,6 +492,11 @@ mod tests {
                 name: "Bacteria".to_string(),
                 depth: 1,
                 children: Vec::new(),
+                // Add missing fields for the test
+                taxon_id: 2,
+                clade_reads: 800,
+                direct_reads: 200,
+                rank: "P".to_string(),
             },
             TaxonEntry {
                 level: 2,
@@ -427,6 +508,11 @@ mod tests {
                 name: "Proteobacteria".to_string(),
                 depth: 2,
                 children: Vec::new(),
+                // Add missing fields for the test
+                taxon_id: 3,
+                clade_reads: 600,
+                direct_reads: 100,
+                rank: "C".to_string(),
             },
         ];
         

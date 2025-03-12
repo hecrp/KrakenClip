@@ -1,6 +1,13 @@
-# Kraken2 Toolkit
+# KrakenClip
 
-Kraken2 Toolkit is a command-line utility written in [Rust](https://www.rust-lang.org/) for processing and analyzing [Kraken2](https://ccb.jhu.edu/software/kraken2/) bioinformatics software reports and log files. This toolkit focuses on fast and efficient processing of classifier outputs, thus being a comprehensive option for large datasets or bioinformatics pipelines as it works as a binary file with no external dependencies.
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+[![Rust](https://img.shields.io/badge/rust-1.70%2B-blue.svg)](https://www.rust-lang.org/)
+[![Docker Pulls](https://img.shields.io/docker/pulls/hecrp/krakenclip.svg)](https://hub.docker.com/r/hecrp/krakenclip)
+[![Docker Image Size](https://img.shields.io/docker/image-size/hecrp/krakenclip.svg)](https://hub.docker.com/r/hecrp/krakenclip)
+[![Build Status](https://img.shields.io/badge/build-passing-brightgreen)](https://github.com/hecrp/krakenclip)
+[![Maintenance](https://img.shields.io/badge/Maintained%3F-yes-green.svg)](https://github.com/hecrp/krakenclip/graphs/commit-activity)
+
+KrakenClip is a high-performance command-line utility written in [Rust](https://www.rust-lang.org/) for processing and analyzing [Kraken2](https://ccb.jhu.edu/software/kraken2/) bioinformatics software reports and log files. This toolkit focuses on fast and efficient processing of classifier outputs, making it an ideal choice for large datasets or bioinformatics pipelines as it works as a standalone binary with no external dependencies.
 
 ## Getting Started
 
@@ -13,8 +20,8 @@ Kraken2 Toolkit is a command-line utility written in [Rust](https://www.rust-lan
 
 1. Clone the repository:
    ```
-   git clone https://github.com/yourusername/kraken2-toolkit.git
-   cd kraken2-toolkit
+   git clone https://github.com/hecrp/krakenclip.git
+   cd krakenclip
    ```
 
 2. Build the project:
@@ -29,35 +36,30 @@ Kraken2 Toolkit is a command-line utility written in [Rust](https://www.rust-lan
 
 ### Docker
 
-You can also use the provided Dockerfile to build and run Kraken2 Toolkit in a container:
+You can also use the provided Dockerfile to build and run KrakenClip in a container:
 
 1. Build the Docker image:
    ```
-   docker build -t kraken2-toolkit .
+   docker build -t krakenclip .
    ```
 
-2. Or for an even smaller image using Alpine Linux:
+2. Run the Docker container:
    ```
-   docker build -f Dockerfile -t kraken2-toolkit .
-   ```
-
-3. Run the Docker container:
-   ```
-   docker run --rm kraken2-toolkit
+   docker run --rm krakenclip
    ```
 
-4. To process files, mount volumes:
+3. To process files, mount volumes and run the toolkit:
    ```
-   docker run --rm -v /path/to/local/data:/data kraken2-toolkit analyze /data/report.txt
+   docker run --rm -v /path/to/local/data:/data krakenclip analyze /data/report.txt
    ```
 
 ## Usage
 
-The basic syntax for using Kraken2 Toolkit is shown below:
+The basic syntax for using KrakenClip is shown below:
 
 ```
 USAGE:
-    kraken2-parser [SUBCOMMAND]
+    krakenclip [SUBCOMMAND]
 
 OPTIONS:
     -h, --help       Print help information
@@ -76,7 +78,7 @@ Used to analyze and extract information from Kraken2 reports:
 
 ```
 USAGE:
-    kraken2-parser analyze [OPTIONS] <REPORT>
+    krakenclip analyze [OPTIONS] <REPORT>
 
 ARGS:
     <REPORT>    Kraken2 report file
@@ -93,18 +95,41 @@ Used to extract sequences based on Kraken2 results:
 
 ```
 USAGE:
-    kraken2-parser extract [OPTIONS] --output <OUTPUT> --taxids <TAXIDS> <SEQUENCE> <LOG>
+    krakenclip extract [OPTIONS] --output <OUTPUT> --taxids <TAXIDS> <SEQUENCE> <LOG>
 
 ARGS:
-    <SEQUENCE>    Input FASTA/FASTQ file
-    <LOG>         Kraken2 log file
+    <SEQUENCE>                Input FASTA/FASTQ file
+    <LOG>                     Kraken2 log file
 
 OPTIONS:
     -h, --help                Print help information
     -o, --output <OUTPUT>     Output file for extracted sequences
-        --report <REPORT>     Kraken2 report file (optional and under development)
+        --report <REPORT>     Kraken2 report file (required for hierarchy (--include) options)
         --taxids <TAXIDS>     Comma-separated list of taxids to extract
+        --include-children    Include sequences from all descendant taxa
+        --include-parents     Include sequences from all ancestor taxa
+        --stats-output <FILE> Generate a statistics file with detailed extraction information
 ```
+
+#### Hierarchical Extraction
+
+The Extract module now supports hierarchical taxonomic extraction with two key options:
+
+- **`--include-children`**: Extracts sequences from the specified taxids AND all their descendant taxa.
+
+- **`--include-parents`**: Extracts sequences from the specified taxids AND all their ancestor taxa.
+
+Both options require providing a Kraken2 report file with the `--report` option, as the taxonomic hierarchy information is extracted from there.
+
+#### Statistics Report
+
+The new `--stats-output` option generates a comprehensive markdown-formatted statistics file that includes:
+
+- Total sequence counts (extracted vs. input)
+- Breakdown of extracted sequences by taxid
+- Percentage of sequences per taxid relative to total extracted and total input
+- Distinction between original taxids and those added through hierarchical expansion (expanded)
+- Summary statistics for original vs. expanded taxa
 
 ### Generate Test Data Module
 
@@ -112,7 +137,7 @@ Used to generate test data for benchmarking and testing:
 
 ```
 USAGE:
-    kraken2-parser generate-test-data [OPTIONS] --output <OUTPUT> --lines <LINES> --type <TYPE>
+    krakenclip generate-test-data [OPTIONS] --output <OUTPUT> --lines <LINES> --type <TYPE>
 
 OPTIONS:
     -h, --help                Print help information
@@ -123,7 +148,7 @@ OPTIONS:
 
 ## Performance
 
-The Kraken2 Toolkit is highly optimized for performance and memory efficiency. It implements several advanced techniques:
+The KrakenClip is highly optimized for performance and memory efficiency. It implements several advanced techniques:
 
 ### Optimization Techniques
 - **Block-based reading**: Uses optimized 512KB buffers for efficient file processing

@@ -4,6 +4,8 @@
 Cargo.lock
 
 metagen_data/
+conda-recipe/
+environment.yml
 *.json
 data/
 NOTES.md

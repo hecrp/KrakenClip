@@ -1,7 +1,7 @@
 [package]
-name = "kraken2-parser"
-version = "0.1.0"
-edition = "2021"
+name = "krakenclip"
+version = "0.2.0"
+edition = "2025"
 
 [dependencies]
 clap = { version = "3.2", features = ["derive"] }
@@ -14,6 +14,7 @@ fast-float = "0.2"
 memory-stats = "1.0.0"
 colored = "2.0"
 rand = "0.8.5"
+chrono = "0.4"
 
 [dev-dependencies]
 criterion = "0.3"
