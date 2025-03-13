@@ -1,5 +1,5 @@
 use clap::{App, Arg, SubCommand};
-use crate::krk_parser::{self, KrakenReport, TaxonEntry};
+use crate::krk_parser;
 use std::time::Instant;
 use memory_stats::memory_stats;
 use std::fs::File;
@@ -11,6 +11,7 @@ use crate::sequence_processor;
 use crate::generate_test_data;
 use std::path::Path;
 use chrono;
+use crate::abundance_matrix::{AbundanceMatrix, validate_taxonomic_level};
 
 pub fn run_cli() {
     let matches = App::new("KrakenClip")
@@ -76,6 +77,10 @@ pub fn run_cli() {
                 .help("Include sequences from all ancestor taxa")
                 .long("include-parents")
                 .takes_value(false))
+            .arg(Arg::with_name("EXCLUDE")
+                .help("Exclude sequences matching the specified taxids (inverse operation)")
+                .long("exclude")
+                .takes_value(false))
             .arg(Arg::with_name("STATS_OUTPUT")
                 .help("Generate a statistics file with detailed extraction information")
                 .long("stats-output")
@@ -98,6 +103,45 @@ pub fn run_cli() {
                 .long("type")
                 .default_value("random")
                 .takes_value(true)))
+        .subcommand(SubCommand::with_name("abundance-matrix")
+            .about("Generate a matrix of taxonomic abundances from Kraken2 reports")
+            .arg(Arg::with_name("INPUT")
+                .help("Input Kraken2 report files (can be multiple)")
+                .required(true)
+                .multiple(true)
+                .index(1))
+            .arg(Arg::with_name("OUTPUT")
+                .help("Output TSV file for the abundance matrix")
+                .required(true)
+                .short('o')
+                .long("output")
+                .takes_value(true))
+            .arg(Arg::with_name("LEVEL")
+                .help("Taxonomic level to aggregate abundances (S=species, G=genus, F=family, O=order, C=class, P=phylum, K=kingdom)")
+                .long("level")
+                .default_value("S")
+                .takes_value(true))
+            .arg(Arg::with_name("MIN_ABUNDANCE")
+                .help("Minimum abundance threshold (0.0-100.0)")
+                .long("min-abundance")
+                .default_value("0.0")
+                .takes_value(true))
+            .arg(Arg::with_name("NORMALIZE")
+                .help("Normalize abundances to percentages during processing")
+                .long("normalize")
+                .takes_value(false))
+            .arg(Arg::with_name("UNCLASSIFIED")
+                .help("Include unclassified sequences in the matrix")
+                .long("include-unclassified")
+                .takes_value(false))
+            .arg(Arg::with_name("PROPORTIONS")
+                .help("Transform counts to proportions (default, can be combined with --normalize)")
+                .long("proportions")
+                .takes_value(false))
+            .arg(Arg::with_name("ABSOLUTE_COUNTS")
+                .help("Use absolute counts without converting to proportions")
+                .long("absolute-counts")
+                .takes_value(false)))
         .get_matches();
 
     match matches.subcommand() {
@@ -109,6 +153,9 @@ pub fn run_cli() {
         }
         Some(("generate-test-data", generate_matches)) => {
             run_generate(generate_matches);
+        }
+        Some(("abundance-matrix", matrix_matches)) => {
+            run_abundance_matrix(matrix_matches);
         }
         _ => {
             println!("Please specify a subcommand. Use --help for more information.");
@@ -178,6 +225,7 @@ fn run_extract(matches: &clap::ArgMatches) {
     
     let include_children = matches.is_present("INCLUDE_CHILDREN");
     let include_parents = matches.is_present("INCLUDE_PARENTS");
+    let exclude = matches.is_present("EXCLUDE");
     
     // Map to track which taxid each readid belongs to
     // We estimate an average of 1000 sequences per taxid
@@ -243,11 +291,17 @@ fn run_extract(matches: &clap::ArgMatches) {
             let total_sequences = count_sequences_in_file(sequence_file);
             
             // Extract the sequences
-            match sequence_processor::process_sequence_files(&[sequence_file.to_string()], &save_readids, output_file) {
+            match sequence_processor::process_sequence_files(&[sequence_file.to_string()], &save_readids, output_file, exclude) {
                 Ok(_) => {
                     println!("Sequences extracted successfully to {}", output_file);
-                    println!("Extracted sequences matching {} taxids", taxids.len());
-                    println!("Total extracted sequences: {}", save_readids.len());
+                    println!("{} sequences matching {} taxids", 
+                        if exclude { "Excluded" } else { "Extracted" },
+                        taxids.len()
+                    );
+                    println!("Total {} sequences: {}", 
+                        if exclude { "excluded" } else { "extracted" },
+                        save_readids.len()
+                    );
                     
                     // Generate statistics file if requested
                     if let Some(stats_file) = matches.value_of("STATS_OUTPUT") {
@@ -593,5 +647,52 @@ fn search_taxon(_report: &krk_parser::KrakenReport, search_term: &str) {
 fn apply_filter(_report: &krk_parser::KrakenReport, filter: &str) {
     println!("Applying filter: {}", filter);
     // Implement filter functionality
+}
+
+fn run_abundance_matrix(matches: &clap::ArgMatches) {
+    let input_files = matches.values_of("INPUT").unwrap().collect::<Vec<&str>>();
+    let output_file = matches.value_of("OUTPUT").unwrap();
+    let level = matches.value_of("LEVEL").unwrap();
+    let min_abundance = matches.value_of("MIN_ABUNDANCE").unwrap().parse::<f64>().unwrap();
+    let normalize = matches.is_present("NORMALIZE");
+    let include_unclassified = matches.is_present("UNCLASSIFIED");
+    let convert_to_proportions = matches.is_present("PROPORTIONS") || !matches.is_present("ABSOLUTE_COUNTS");
+    
+    // Validate the taxonomic level
+    if !validate_taxonomic_level(level) {
+        eprintln!("Error: The taxonomic level '{}' is not valid. Use K, P, C, O, F, G or S.", level);
+        return;
+    }
+
+    // Create a new abundance matrix
+    let mut matrix = AbundanceMatrix::new(level);
+    matrix.set_force_include_unclassified(include_unclassified);
+
+    // Process each input file
+    for (i, file) in input_files.iter().enumerate() {
+        // Use the filename as the sample name (removing extension and path)
+        let default_name = format!("sample_{}", i + 1);
+        let sample_name = Path::new(file)
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(&default_name);
+        
+        println!("Processing sample: {}", sample_name);
+        
+        // Parse the report and add it to the matrix
+        let (report, _) = krk_parser::parse_kraken2_report(file);
+        matrix.add_sample(&report, sample_name, min_abundance, normalize);
+    }
+
+    // Convert counts to proportions (now default, except if --absolute-counts is specified)
+    if convert_to_proportions && !normalize {
+        matrix.transform_to_proportions();
+    }
+
+    // Generate the abundance matrix in TSV format
+    match matrix.write_matrix(output_file) {
+        Ok(_) => println!("Abundance matrix successfully generated in: {}", output_file),
+        Err(e) => eprintln!("Error generating abundance matrix: {}", e),
+    }
 }
 

@@ -9,11 +9,17 @@
 
 KrakenClip is a high-performance command-line utility written in [Rust](https://www.rust-lang.org/) for processing and analyzing [Kraken2](https://ccb.jhu.edu/software/kraken2/) bioinformatics software reports and log files. This toolkit focuses on fast and efficient processing of classifier outputs, making it an ideal choice for large datasets or bioinformatics pipelines as it works as a standalone binary with no external dependencies.
 
+KrakenClip implements several functionalities inspired by [KrakenTools](https://github.com/jenniferlu717/KrakenTools), which was the pioneering suite of scripts for handling Kraken2 outputs. The merit for these functionalities belongs to KrakenTools, and if you use KrakenClip in your research, please consider citing KrakenTools as well:
+
+Lu J, Rincon N, Wood DE, Breitwieser FP, Pockrandt C, Langmead B, Salzberg SL, Steinegger M. Metagenome analysis using the Kraken software suite. Nature Protocols, doi: 10.1038/s41596-022-00738-y (2022)
+
+The inspiration to develop KrakenClip came from creating a high-performance version of KrakenTools while improving Rust programming skills. KrakenTools was extensively used during my PhD and integrated into metagenomic data analysis pipelines, making it an essential tool in my research workflow. This experience highlighted both the utility and the potential performance limitations of the original Python-based tools, motivating the development of this Rust implementation.
+
 ## Getting Started
 
 ### Prerequisites
 
-- Rust programming language (latest stable version)
+- Rust programming language (latest stable version or 1.70)
 - Cargo (Rust's package manager)
 
 ### Installation
@@ -29,9 +35,9 @@ KrakenClip is a high-performance command-line utility written in [Rust](https://
    cargo build --release
    ```
 
-3. The executable will be available in `target/release/kraken2-parser`
+3. The executable will be available in `target/release/krakenclip`
     ```
-    ./target/release/kraken2-parser --help
+    ./target/release/krakenclip --help
     ```
 
 ### Docker
@@ -53,6 +59,13 @@ You can also use the provided Dockerfile to build and run KrakenClip in a contai
    docker run --rm -v /path/to/local/data:/data krakenclip analyze /data/report.txt
    ```
 
+4. Alternatively, pull the pre-built multi-architecture image from Docker Hub:
+   ```
+   docker pull hecrp/krakenclip:latest
+   ```
+   
+   The image on Docker Hub is built with multi-architecture support, allowing it to run transparently on both x86 and ARM architectures, including Apple Silicon where it has been developed and tested. This means the same image will work natively on any system without manual configuration.
+
 ## Usage
 
 The basic syntax for using KrakenClip is shown below:
@@ -68,6 +81,7 @@ OPTIONS:
 SUBCOMMANDS:
     analyze               Analyze Kraken2 report
     extract               Extract sequences based on Kraken2 results
+    abundance-matrix      Generate taxonomic abundance matrices from multiple reports
     generate-test-data    Generate test data for performance testing
     help                  Print this message or the help of the given subcommand(s)
 ```
@@ -108,6 +122,7 @@ OPTIONS:
         --taxids <TAXIDS>     Comma-separated list of taxids to extract
         --include-children    Include sequences from all descendant taxa
         --include-parents     Include sequences from all ancestor taxa
+        --exclude             Exclude sequences matching the specified taxids (inverse operation)
         --stats-output <FILE> Generate a statistics file with detailed extraction information
 ```
 
@@ -131,41 +146,35 @@ The new `--stats-output` option generates a comprehensive markdown-formatted sta
 - Distinction between original taxids and those added through hierarchical expansion (expanded)
 - Summary statistics for original vs. expanded taxa
 
-### Generate Test Data Module
+### Abundance Matrix Module
 
-Used to generate test data for benchmarking and testing:
+Used to generate taxonomic abundance matrices from Kraken2 reports:
 
 ```
 USAGE:
-    krakenclip generate-test-data [OPTIONS] --output <OUTPUT> --lines <LINES> --type <TYPE>
+    krakenclip abundance-matrix [OPTIONS] --output <o> <INPUT>...
+
+ARGS:
+    <INPUT>...               Input Kraken2 report files (can be multiple)
 
 OPTIONS:
-    -h, --help                Print help information
-    -o, --output <OUTPUT>     Output file path
-    -l, --lines <LINES>       Number of lines to generate
-    -t, --type <TYPE>         Type of data to generate (wide, deep, fragments, dense, etc.)
+    -h, --help               Print help information
+    -o, --output <o>         Output TSV file for the abundance matrix
+        --level <LEVEL>      Taxonomic level to aggregate abundances (S=species, G=genus, F=family,
+                             O=order, C=class, P=phylum, K=kingdom) [default: S]
+        --min-abundance <MIN> Minimum abundance threshold (0.0-100.0) [default: 0.0]
+        --normalize          Normalize abundances to percentages during processing
+        --include-unclassified Include unclassified sequences in the matrix
+        --proportions        Transform counts to proportions (default behavior)
+        --absolute-counts    Use absolute read counts without converting to proportions
 ```
 
-## Performance
-
-The KrakenClip is highly optimized for performance and memory efficiency. It implements several advanced techniques:
-
-### Optimization Techniques
-- **Block-based reading**: Uses optimized 512KB buffers for efficient file processing
-- **Fast pattern searching**: Leverages `memchr` with SIMD instructions when available
-- **Optimized numeric parsing**: Implements `fast-float` for zero-allocation number conversion
-- **String caching**: Prevents memory duplication for repeated strings like taxonomic rank codes
-- **Smart memory pre-allocation**: Minimizes reallocations during processing
-- **Zero-copy processing**: Works directly with byte slices when possible
-
-### Key Libraries
-- **memchr**: Provides ultra-fast character searching using SIMD when available
-- **fast-float**: High-performance numeric parsing
-- **rayon**: Enables parallel processing for operations like sequence extraction
-- **serde_json**: Efficient JSON serialization/deserialization
-
-These optimizations result in 3-5x better performance compared to traditional parsers, with predictable memory usage even for extremely large files (millions of lines).
-
-## License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
+#### Features
+- Generates a TSV matrix of taxonomic abundances across multiple samples
+- Supports all taxonomic levels (species to kingdom)
+- Optional abundance threshold filtering
+- **Uses proportions (percentages) by default** for better comparability between samples
+- Two options for handling abundance values:
+  - **Proportions (default)**: Shows relative abundance as percentages
+  - **Absolute counts**: Shows raw read counts (use `--absolute-counts` to enable)
+- Complete handling of unclassified reads with `--include-unclassified`

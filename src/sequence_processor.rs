@@ -6,7 +6,12 @@ use rayon::prelude::*;
 use memchr::memchr;
 use std::sync::{Arc, Mutex};
 
-pub fn process_sequence_files(input_files: &[String], save_readids: &HashSet<String>, output_file: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+pub fn process_sequence_files(
+    input_files: &[String], 
+    save_readids: &HashSet<String>, 
+    output_file: &str,
+    exclude: bool
+) -> Result<(), Box<dyn Error + Send + Sync>> {
     let output = File::create(output_file)?;
     let writer: Arc<Mutex<BufWriter<File>>> = Arc::new(Mutex::new(BufWriter::new(output)));
 
@@ -25,7 +30,13 @@ pub fn process_sequence_files(input_files: &[String], save_readids: &HashSet<Str
 
             if buffer[0] == b'>' || buffer[0] == b'@' {
                 let id = parse_id(&buffer);
-                if save_readids.contains(id) {
+                let should_write = if exclude {
+                    !save_readids.contains(id)
+                } else {
+                    save_readids.contains(id)
+                };
+
+                if should_write {
                     writer.lock().unwrap().write_all(&buffer)?;
                     
                     if buffer[0] == b'@' {

@@ -3,6 +3,7 @@ mod taxon_query;
 mod logkrk_parser;
 mod sequence_processor;
 mod generate_test_data;
+mod abundance_matrix;
 mod cli;
 
 fn main() {

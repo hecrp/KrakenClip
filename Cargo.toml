@@ -1,7 +1,7 @@
 [package]
 name = "krakenclip"
 version = "0.2.0"
-edition = "2025"
+edition = "2021"
 
 [dependencies]
 clap = { version = "3.2", features = ["derive"] }
@@ -22,3 +22,14 @@ criterion = "0.3"
 [[bench]]
 name = "parsing_benchmark"
 harness = false
+
+# Optimizations for release mode - maximum compression and performance
+[profile.release]
+opt-level = 3                # Maximum optimization level
+lto = true                   # Link-time optimization
+codegen-units = 1            # Better cross-module optimization
+panic = 'abort'              # Removes panic recovery code
+strip = true                 # Removes debug information
+debug = false                # No debug information
+incremental = false          # Disables incremental compilation to optimize size
+overflow-checks = false      # Disables overflow checks for performance
