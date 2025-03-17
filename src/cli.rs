@@ -1,4 +1,4 @@
-use clap::{App, Arg, SubCommand};
+use clap::{Parser, Subcommand, Args};
 use crate::krk_parser;
 use std::time::Instant;
 use memory_stats::memory_stats;
@@ -9,512 +9,511 @@ use std::collections::{HashSet, HashMap};
 use crate::logkrk_parser;
 use crate::sequence_processor;
 use crate::generate_test_data;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use chrono;
 use crate::abundance_matrix::{AbundanceMatrix, validate_taxonomic_level};
+use std::error::Error;
 
+const BUFFER_SIZE: usize = 512 * 1024; // 512KB buffer for I/O
+
+/// KrakenClip - High-performance Kraken2 data processing toolkit
+#[derive(Parser)]
+#[command(version = "0.2.0", author = "Author", about = "A high-performance toolkit for processing Kraken2 reports, logs, and sequence files")]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+/// Available subcommands
+#[derive(Subcommand)]
+enum Commands {
+    /// Analyzes a Kraken2 report
+    Analyze(AnalyzeArgs),
+    
+    /// Extracts sequences based on Kraken2 results
+    Extract(ExtractArgs),
+    
+    /// Generates taxonomic abundance matrices from multiple reports
+    #[command(name = "abundance-matrix")]
+    AbundanceMatrix(AbundanceMatrixArgs),
+    
+    /// Generates test data for performance testing
+    #[command(name = "generate-test-data")]
+    GenerateTestData(GenerateTestDataArgs),
+}
+
+/// Arguments for the 'analyze' command
+#[derive(Args)]
+struct AnalyzeArgs {
+    /// Kraken2 report file
+    report: String,
+    
+    /// Generate JSON output
+    #[arg(long)]
+    json: Option<String>,
+    
+    /// Look for a specific taxon by ID
+    #[arg(long = "tax-id")]
+    taxon_id: Option<String>,
+    
+    /// Look for a specific taxon by name
+    #[arg(long)]
+    search: Option<String>,
+    
+    /// Filter results (by rank, percentage, etc.)
+    #[arg(long)]
+    filter: Option<String>,
+    
+    /// Show taxonomic or aggregated information
+    #[arg(long)]
+    info: bool,
+}
+
+/// Arguments for the 'extract' command
+#[derive(Args)]
+struct ExtractArgs {
+    /// Input FASTA/FASTQ file
+    sequence: String,
+    
+    /// Kraken2 log file
+    log: String,
+    
+    /// Output file for extracted sequences
+    #[arg(short, long)]
+    output: String,
+    
+    /// Kraken2 report file (required for hierarchy options)
+    #[arg(long)]
+    report: Option<String>,
+    
+    /// Comma-separated list of taxids to extract
+    #[arg(long)]
+    taxids: String,
+    
+    /// Include sequences from all descendant taxa
+    #[arg(long = "include-children")]
+    include_children: bool,
+    
+    /// Include sequences from all ancestor taxa
+    #[arg(long = "include-parents")]
+    include_parents: bool,
+    
+    /// Exclude sequences matching the specified taxids
+    #[arg(long)]
+    exclude: bool,
+    
+    /// Generate a statistics file with detailed information
+    #[arg(long = "stats-output")]
+    stats_output: Option<String>,
+}
+
+/// Arguments for the 'abundance-matrix' command
+#[derive(Args)]
+struct AbundanceMatrixArgs {
+    /// Input Kraken2 report files (can be multiple)
+    #[arg(required = true)]
+    input: Vec<String>,
+    
+    /// Output TSV file for the abundance matrix
+    #[arg(short, long)]
+    output: String,
+    
+    /// Taxonomic level for aggregating abundances
+    #[arg(long, default_value = "S")]
+    level: String,
+    
+    /// Minimum abundance threshold (0.0-100.0)
+    #[arg(long = "min-abundance", default_value = "0.0")]
+    min_abundance: f64,
+    
+    /// Normalize abundances to percentages during processing
+    #[arg(long)]
+    normalize: bool,
+    
+    /// Include unclassified sequences in the matrix
+    #[arg(long = "include-unclassified")]
+    include_unclassified: bool,
+    
+    /// Transform counts to proportions
+    #[arg(long)]
+    proportions: bool,
+    
+    /// Use absolute read counts without converting to proportions
+    #[arg(long = "absolute-counts")]
+    absolute_counts: bool,
+}
+
+/// Arguments for the 'generate-test-data' command
+#[derive(Args)]
+struct GenerateTestDataArgs {
+    /// Output file path
+    #[arg(short, long)]
+    output: String,
+    
+    /// Number of lines to generate
+    #[arg(short, long)]
+    lines: usize,
+    
+    /// Type of data to generate (wide, deep, fragments, dense, etc.)
+    #[arg(short, long)]
+    r#type: String,
+}
+
+/// Main function to run the command-line interface
 pub fn run_cli() {
-    let matches = App::new("KrakenClip")
-        .version("0.2.0")
-        .author("Your Name")
-        .about("A high-performance toolkit for processing Kraken2 reports, logs, and sequence files")
-        .subcommand(SubCommand::with_name("analyze")
-            .about("Analyze Kraken2 report")
-            .arg(Arg::with_name("REPORT")
-                .help("Kraken2 report file")
-                .required(true)
-                .index(1))
-            .arg(Arg::with_name("JSON")
-                .help("Generate JSON output")
-                .long("json")
-                .takes_value(true))
-            .arg(Arg::with_name("TAXON_ID")
-                .help("Search for a specific taxon by ID")
-                .long("tax-id")
-                .takes_value(true))
-            .arg(Arg::with_name("SEARCH")
-                .help("Search for a specific taxon by name")
-                .long("search")
-                .takes_value(true))
-            .arg(Arg::with_name("FILTER")
-                .help("Filter results (e.g., by rank, percentage)")
-                .long("filter")
-                .takes_value(true))
-            .arg(Arg::with_name("INFO")
-                .help("Display taxonomic or aggregated information")
-                .long("info")
-                .takes_value(false)))
-        .subcommand(SubCommand::with_name("extract")
-            .about("Extract sequences based on Kraken2 results")
-            .arg(Arg::with_name("SEQUENCE")
-                .help("Input FASTA/FASTQ file")
-                .required(true)
-                .index(1))
-            .arg(Arg::with_name("LOG")
-                .help("Kraken2 log file")
-                .required(true)
-                .index(2))
-            .arg(Arg::with_name("REPORT")
-                .help("Kraken2 report file")
-                .long("report")
-                .takes_value(true))
-            .arg(Arg::with_name("OUTPUT")
-                .help("Output file for extracted sequences")
-                .required(true)
-                .short('o')
-                .long("output")
-                .takes_value(true))
-            .arg(Arg::with_name("TAXIDS")
-                .help("Comma-separated list of taxids to extract")
-                .required(true)
-                .long("taxids")
-                .takes_value(true))
-            .arg(Arg::with_name("INCLUDE_CHILDREN")
-                .help("Include sequences from all descendant taxa")
-                .long("include-children")
-                .takes_value(false))
-            .arg(Arg::with_name("INCLUDE_PARENTS")
-                .help("Include sequences from all ancestor taxa")
-                .long("include-parents")
-                .takes_value(false))
-            .arg(Arg::with_name("EXCLUDE")
-                .help("Exclude sequences matching the specified taxids (inverse operation)")
-                .long("exclude")
-                .takes_value(false))
-            .arg(Arg::with_name("STATS_OUTPUT")
-                .help("Generate a statistics file with detailed extraction information")
-                .long("stats-output")
-                .takes_value(true)))
-        .subcommand(SubCommand::with_name("generate-test-data")
-            .about("Generate test data for performance testing")
-            .arg(Arg::with_name("OUTPUT")
-                .help("Output file for generated test data")
-                .required(true)
-                .short('o')
-                .long("output")
-                .takes_value(true))
-            .arg(Arg::with_name("LINES")
-                .help("Number of lines to generate")
-                .long("lines")
-                .default_value("100000")
-                .takes_value(true))
-            .arg(Arg::with_name("TYPE")
-                .help("Type of test data to generate (wide, deep, fragments, dense, etc.)")
-                .long("type")
-                .default_value("random")
-                .takes_value(true)))
-        .subcommand(SubCommand::with_name("abundance-matrix")
-            .about("Generate a matrix of taxonomic abundances from Kraken2 reports")
-            .arg(Arg::with_name("INPUT")
-                .help("Input Kraken2 report files (can be multiple)")
-                .required(true)
-                .multiple(true)
-                .index(1))
-            .arg(Arg::with_name("OUTPUT")
-                .help("Output TSV file for the abundance matrix")
-                .required(true)
-                .short('o')
-                .long("output")
-                .takes_value(true))
-            .arg(Arg::with_name("LEVEL")
-                .help("Taxonomic level to aggregate abundances (S=species, G=genus, F=family, O=order, C=class, P=phylum, K=kingdom)")
-                .long("level")
-                .default_value("S")
-                .takes_value(true))
-            .arg(Arg::with_name("MIN_ABUNDANCE")
-                .help("Minimum abundance threshold (0.0-100.0)")
-                .long("min-abundance")
-                .default_value("0.0")
-                .takes_value(true))
-            .arg(Arg::with_name("NORMALIZE")
-                .help("Normalize abundances to percentages during processing")
-                .long("normalize")
-                .takes_value(false))
-            .arg(Arg::with_name("UNCLASSIFIED")
-                .help("Include unclassified sequences in the matrix")
-                .long("include-unclassified")
-                .takes_value(false))
-            .arg(Arg::with_name("PROPORTIONS")
-                .help("Transform counts to proportions (default, can be combined with --normalize)")
-                .long("proportions")
-                .takes_value(false))
-            .arg(Arg::with_name("ABSOLUTE_COUNTS")
-                .help("Use absolute counts without converting to proportions")
-                .long("absolute-counts")
-                .takes_value(false)))
-        .get_matches();
+    let cli = Cli::parse();
 
-    match matches.subcommand() {
-        Some(("analyze", analyze_matches)) => {
-            run_analyze(analyze_matches);
-        }
-        Some(("extract", extract_matches)) => {
-            run_extract(extract_matches);
-        }
-        Some(("generate-test-data", generate_matches)) => {
-            run_generate(generate_matches);
-        }
-        Some(("abundance-matrix", matrix_matches)) => {
-            run_abundance_matrix(matrix_matches);
-        }
-        _ => {
-            println!("Please specify a subcommand. Use --help for more information.");
-        }
+    let result = match cli.command {
+        Commands::Analyze(args) => run_analyze(args),
+        Commands::Extract(args) => run_extract(args),
+        Commands::AbundanceMatrix(args) => run_abundance_matrix(args),
+        Commands::GenerateTestData(args) => run_generate_test_data(args),
+    };
+
+    if let Err(e) = result {
+        eprintln!("Error: {}", e);
+        std::process::exit(1);
     }
 }
 
-fn run_analyze(matches: &clap::ArgMatches) {
-    let input_file = matches.value_of("REPORT").unwrap();
+/// Implements the 'analyze' command
+fn run_analyze(args: AnalyzeArgs) -> Result<(), Box<dyn Error>> {
+    let before_memory = memory_stats().map(|s| s.physical_mem).unwrap_or(0);
+    let start_time = Instant::now();
     
-    let start = Instant::now();
-    let parse_start = Instant::now();
+    // Parse the Kraken2 report
+    let (report, parse_time) = krk_parser::parse_kraken2_report(&args.report);
     
-    // Get initial memory usage
-    let start_memory = memory_stats().map(|usage: memory_stats::MemoryStats| usage.physical_mem).unwrap_or(0);
+    // Build the hierarchy if necessary
+    let hierarchy_start = Instant::now();
+    let hierarchy_time = hierarchy_start.elapsed().as_secs_f64();
     
-    let (report, hierarchy_time) = krk_parser::parse_kraken2_report(input_file);
-    
-    let parse_time = parse_start.elapsed().as_secs_f64() - hierarchy_time;
-    let total_time = start.elapsed().as_secs_f64();
-    
-    // Get final memory usage
-    let end_memory = memory_stats().map(|usage: memory_stats::MemoryStats| usage.physical_mem).unwrap_or(0);
-    let memory_used = end_memory - start_memory;
-
-    println!("Hierarchy build time: {:.6} seconds", hierarchy_time);
-    
-    // Add additional performance metrics
-    println!("Total time: {:.6} seconds", total_time);
-    println!("File parsing time: {:.6} seconds", parse_time);
-    println!("Memory usage: {} bytes", memory_used);
-    
-    process_report(matches, &report);
-
-    if let Some(taxon_id) = matches.value_of("TAXON_ID").and_then(|id| id.parse().ok()) {
-        if let Some(taxon_info) = find_taxon_info(&report.root, taxon_id) {
-            print_taxon_info(&taxon_info);
-        } else {
-            println!("Taxon with ID {} not found", taxon_id);
+    // If a specific taxon ID search was specified
+    if let Some(taxon_id) = args.taxon_id {
+        let taxon_id = taxon_id.parse::<u32>().unwrap_or(0);
+        match find_taxon_info(&report.root, taxon_id as u64) {
+            Some(taxon_info) => print_taxon_info(&taxon_info),
+            None => println!("Taxon with ID {} not found", taxon_id),
         }
     }
-
-    if let Some(json_output) = matches.value_of("JSON") {
-        match krk_parser::write_json_report(&report, json_output) {
+    
+    // Generate JSON output if requested
+    if let Some(json_output) = args.json {
+        match krk_parser::write_json_report(&report, &json_output) {
             Ok(_) => println!("JSON report written to {}", json_output),
             Err(e) => eprintln!("Error writing JSON report: {}", e),
         }
     }
+    
+    // Show performance metrics
+    let after_memory = memory_stats().map(|s| s.physical_mem).unwrap_or(0);
+    let memory_used = after_memory.saturating_sub(before_memory);
+    let total_time = start_time.elapsed().as_secs_f64();
+    
+    println!("Hierarchy build time: {:.6} seconds", hierarchy_time);
+    println!("Total time: {:.6} seconds", total_time);
+    println!("File parsing time: {:.6} seconds", parse_time);
+    println!("Memory usage: {} bytes", memory_used);
+    
+    Ok(())
 }
 
-fn run_extract(matches: &clap::ArgMatches) {
-    let sequence_file = matches.value_of("SEQUENCE").unwrap();
-    let log_file = matches.value_of("LOG").unwrap();
-    let output_file = matches.value_of("OUTPUT").unwrap();
+/// Implements the 'extract' command
+fn run_extract(args: ExtractArgs) -> Result<(), Box<dyn Error>> {
+    // Parse the list of taxids
+    let taxids: HashSet<String> = args.taxids
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .collect();
     
-    // Calculate approximate number of taxids to pre-allocate memory
-    let taxids_raw = matches.value_of("TAXIDS").unwrap();
-    let taxids_count = taxids_raw.split(',').count();
+    // Estimate the approximate number of taxids to pre-allocate memory
+    let mut expanded_taxids = HashSet::with_capacity(taxids.len() * 10);
     
     // Pre-allocate memory for the sets
-    let mut taxids: HashSet<String> = HashSet::with_capacity(taxids_count * 2); // *2 for margin
+    let mut readids = HashSet::with_capacity(taxids.len() * 1000);
     
-    // Fill the taxids set
-    for taxid in taxids_raw.split(',') {
-        taxids.insert(String::from(taxid));
+    // Fill the taxid set
+    for taxid in &taxids {
+        expanded_taxids.insert(taxid.clone());
     }
-    
-    let include_children = matches.is_present("INCLUDE_CHILDREN");
-    let include_parents = matches.is_present("INCLUDE_PARENTS");
-    let exclude = matches.is_present("EXCLUDE");
     
     // Map to track which taxid each readid belongs to
     // We estimate an average of 1000 sequences per taxid
-    let mut taxid_readid_map: HashMap<String, HashSet<String>> = HashMap::with_capacity(taxids_count * 2);
+    let mut taxid_readid_map: HashMap<String, HashSet<String>> = HashMap::with_capacity(taxids.len());
     
-    // Save original taxids before expansion for tracking
-    let original_taxids: HashSet<String> = taxids.clone();
+    // Save the original taxids before expansion for tracking
+    let original_taxids = expanded_taxids.clone();
     
     // If we need to include children or parents, we need the report file
-    if (include_children || include_parents) && matches.value_of("REPORT").is_some() {
-        let report_file = matches.value_of("REPORT").unwrap();
+    if (args.include_children || args.include_parents) && args.report.is_some() {
+        let report_file = args.report.clone().unwrap();
+        
         println!("Reading taxonomy from report file: {}", report_file);
         
-        // Parse the Kraken report to get the taxonomic tree
-        let (report, _) = krk_parser::parse_kraken2_report(report_file);
+        // Parse the Kraken2 report to get the taxonomic tree
+        let (report, _) = krk_parser::parse_kraken2_report(&report_file);
         
-        // Expand the taxids set based on options
-        if include_children || include_parents {
-            // Estimate initial size for expanded set
-            // For large taxonomies, it could be 10x the original size
-            let estimated_size = if taxids.len() < 10 {
-                // For small sets of taxids, we might have many children
-                taxids.len() * 100
-            } else {
-                // For larger sets, relative expansion is usually smaller
-                taxids.len() * 10
-            };
+        // Expand the set of taxids according to the options
+        let mut expanded_count = 0;
+        
+        // Estimate initial size for the expanded set
+        // For large taxonomies, could be 10x the original size
+        let mut new_taxids = HashSet::with_capacity(if taxids.len() < 10 {
+            // For small sets of taxids, we might have many children
+            taxids.len() * 100
+        } else {
+            // For larger sets, the relative expansion is usually smaller
+            taxids.len() * 10
+        });
+        
+        for taxid in &taxids {
+            let taxid_num = taxid.parse::<u32>().unwrap_or(0);
             
-            let mut expanded_taxids = HashSet::with_capacity(estimated_size);
+            // Add the original taxid
+            new_taxids.insert(taxid.clone());
             
-            for taxid in &taxids {
-                // Add the original taxid
-                expanded_taxids.insert(taxid.clone());
+            if args.include_children {
+                // If include_children is true, add all descendant taxids
+                println!("Including children for taxid: {}", taxid);
+                let mut child_taxids = HashSet::new();
+                find_all_child_taxids(&report.root, taxid_num, &mut child_taxids);
+                expanded_count += child_taxids.len();
                 
-                if let Ok(taxid_num) = taxid.parse::<u64>() {
-                    // If include_children is true, add all descendant taxids
-                    if include_children {
-                        collect_all_children(&report.root, taxid_num, &mut expanded_taxids);
-                        println!("Including children for taxid: {}", taxid);
-                    }
-                    
-                    // If include_parents is true, add all ancestor taxids
-                    if include_parents {
-                        collect_all_parents(&report.root, taxid_num, &mut expanded_taxids);
-                        println!("Including parents for taxid: {}", taxid);
-                    }
+                for child_taxid in child_taxids {
+                    new_taxids.insert(child_taxid.to_string());
                 }
             }
             
-            // Replace original taxids with expanded set
-            taxids = expanded_taxids;
-        }
-        
-        let additional_count = taxids.len() - original_taxids.len();
-        println!("Expanded to {} taxids (added {} through hierarchy)", taxids.len(), additional_count);
-    } else if (include_children || include_parents) && matches.value_of("REPORT").is_none() {
-        eprintln!("Warning: --include-children or --include-parents specified, but no report file provided. Hierarchy expansion disabled.");
-    }
-
-    match logkrk_parser::parse_kraken_output_with_taxids(log_file, &taxids, &mut taxid_readid_map) {
-        Ok(save_readids) => {
-            // Track total sequences in the input file
-            let total_sequences = count_sequences_in_file(sequence_file);
-            
-            // Extract the sequences
-            match sequence_processor::process_sequence_files(&[sequence_file.to_string()], &save_readids, output_file, exclude) {
-                Ok(_) => {
-                    println!("Sequences extracted successfully to {}", output_file);
-                    println!("{} sequences matching {} taxids", 
-                        if exclude { "Excluded" } else { "Extracted" },
-                        taxids.len()
-                    );
-                    println!("Total {} sequences: {}", 
-                        if exclude { "excluded" } else { "extracted" },
-                        save_readids.len()
-                    );
-                    
-                    // Generate statistics file if requested
-                    if let Some(stats_file) = matches.value_of("STATS_OUTPUT") {
-                        match generate_statistics_file(
-                            stats_file,
-                            &taxid_readid_map,
-                            &original_taxids,
-                            &taxids,
-                            save_readids.len(),
-                            total_sequences
-                        ) {
-                            Ok(_) => println!("Statistics written to {}", stats_file),
-                            Err(e) => eprintln!("Error writing statistics: {}", e),
-                        }
-                    }
-                },
-                Err(e) => eprintln!("Error processing sequence file: {}", e),
+            if args.include_parents {
+                // If include_parents is true, add all ancestor taxids
+                println!("Including parents for taxid: {}", taxid);
+                let mut parent_taxids = HashSet::new();
+                find_all_parent_taxids(&report.root, taxid_num, &mut parent_taxids);
+                expanded_count += parent_taxids.len();
+                
+                for parent_taxid in parent_taxids {
+                    new_taxids.insert(parent_taxid.to_string());
+                }
             }
         }
-        Err(e) => eprintln!("Error parsing Kraken log: {}", e),
+        
+        // Replace the original taxids with the expanded set
+        expanded_taxids = new_taxids;
+        println!("Expanded to {} taxids (added {} through hierarchy)", expanded_taxids.len(), expanded_count);
+    } else if (args.include_children || args.include_parents) && args.report.is_none() {
+        // Return an error instead of just a warning
+        return Err("Error: A report file (--report) is required when using --include-children or --include-parents options.".into());
     }
+    
+    // Track the total sequences in the input file
+    let mut total_sequences = 0;
+    
+    // Extract the sequences
+    match logkrk_parser::parse_kraken_output_with_taxids(&args.log, &expanded_taxids, &mut taxid_readid_map) {
+        Ok(ids) => {
+            readids = ids;
+            total_sequences = count_sequences_in_file(&args.sequence)?;
+            
+            match sequence_processor::process_sequence_files(&[args.sequence.clone()], &readids, &args.output, args.exclude) {
+                Ok(_) => {
+                    println!("Sequences extracted successfully to {}", args.output);
+                    println!("{} sequences matching {} taxids",
+                        readids.len(),
+                        expanded_taxids.len()
+                    );
+                    println!("Total {} sequences: {}",
+                        if args.exclude { "excluded" } else { "extracted" },
+                        readids.len()
+                    );
+                }
+                Err(e) => return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))),
+            }
+            
+            // Generate statistics file if requested
+            if let Some(ref stats_file) = args.stats_output {
+                match generate_statistics_file(
+                    &stats_file,
+                    &taxid_readid_map,
+                    &original_taxids,
+                    total_sequences,
+                    &args
+                ) {
+                    Ok(_) => println!("Statistics written to {}", stats_file),
+                    Err(e) => eprintln!("Error writing statistics: {}", e),
+                }
+            }
+        }
+        Err(e) => return Err(format!("Error processing sequence file: {}", e).into()),
+    }
+    
+    Ok(())
 }
 
-// Count total sequences in a FASTA/FASTQ file
-fn count_sequences_in_file(file_path: &str) -> usize {
-    let file = match File::open(file_path) {
-        Ok(file) => file,
-        Err(_) => return 0,
-    };
+/// Counts the total sequences in a FASTA/FASTQ file
+fn count_sequences_in_file(filename: &str) -> Result<usize, Box<dyn Error>> {
+    let file = File::open(filename)?;
     
     // Use a large buffer (512 KB) for efficient reading
-    let mut reader = BufReader::with_capacity(512 * 1024, file);
-    let mut buffer = Vec::with_capacity(512 * 1024);
+    let mut reader = BufReader::with_capacity(BUFFER_SIZE, file);
+    let mut buffer = Vec::with_capacity(1024);
     
-    // Detect file format by reading the first character
-    let first_byte = match reader.fill_buf() {
-        Ok(buf) if !buf.is_empty() => buf[0],
-        _ => return 0, // Empty file or error
-    };
-    
+    // Detect the file format by reading the first character
+    reader.read_until(b'\n', &mut buffer)?;
+    match buffer.first() {
+        Some(b'>') => count_fasta_sequences(reader),
+        Some(b'@') => count_fastq_sequences(reader),
+        _ => Err("Unknown format or empty file".into()), // Empty file or error
+    }
+}
+
+/// Counts sequences in a FASTA file
+fn count_fasta_sequences(mut reader: BufReader<File>) -> Result<usize, Box<dyn Error>> {
     // Counters for statistics
-    let mut count = 0;
+    let mut sequence_count = 1; // We already read the first line
+    let mut buffer = Vec::with_capacity(1024);
     
     // Identify bytes for sequence identifiers
-    let fasta_marker = b'>';
-    let fastq_marker = b'@';
+    let header_char = b'>';
     
-    match first_byte {
-        b'>' => {
-            // FASTA file
-            // Count each line that starts with '>'
-            loop {
-                buffer.clear();
-                let bytes_read = match reader.read_until(b'\n', &mut buffer) {
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-                
-                if bytes_read == 0 {
-                    break;
-                }
-                
-                if !buffer.is_empty() && buffer[0] == fasta_marker {
-                    count += 1;
-                }
-            }
-        },
-        b'@' => {
-            // FASTQ file
-            // In FASTQ each record has 4 lines, only count the first
-            let mut line_num = 0;
-            
-            loop {
-                buffer.clear();
-                let bytes_read = match reader.read_until(b'\n', &mut buffer) {
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-                
-                if bytes_read == 0 {
-                    break;
-                }
-                
-                if line_num % 4 == 0 && !buffer.is_empty() && buffer[0] == fastq_marker {
-                    count += 1;
-                }
-                
-                line_num += 1;
-            }
-        },
-        _ => {
-            // Unknown format
-            eprintln!("Warning: Unrecognized sequence file format, assuming FASTA");
-            // Try to process as FASTA anyway
-            loop {
-                buffer.clear();
-                let bytes_read = match reader.read_until(b'\n', &mut buffer) {
-                    Ok(n) => n,
-                    Err(_) => break,
-                };
-                
-                if bytes_read == 0 {
-                    break;
-                }
-                
-                if !buffer.is_empty() && buffer[0] == fasta_marker {
-                    count += 1;
-                }
+    // FASTA file
+    // Count each line starting with '>'
+    loop {
+        buffer.clear();
+        let bytes_read = reader.read_until(b'\n', &mut buffer)?;
+        
+        if bytes_read == 0 {
+            break;
+        }
+        
+        if !buffer.is_empty() && buffer[0] == header_char {
+            sequence_count += 1;
+        }
+    }
+    
+    Ok(sequence_count)
+}
+
+/// Counts sequences in a FASTQ file
+fn count_fastq_sequences(mut reader: BufReader<File>) -> Result<usize, Box<dyn Error>> {
+    // Counters for statistics
+    let mut sequence_count = 1; // We already read the first line
+    let mut line_count = 1;
+    let mut buffer = Vec::with_capacity(1024);
+    
+    // FASTQ file
+    // In FASTQ each record has 4 lines, only count the first one
+    loop {
+        buffer.clear();
+        let bytes_read = reader.read_until(b'\n', &mut buffer)?;
+        
+        if bytes_read == 0 {
+            break;
+        }
+        
+        line_count += 1;
+        
+        if line_count % 4 == 1 {
+            if !buffer.is_empty() && buffer[0] == b'@' {
+                sequence_count += 1;
+            } else {
+                eprintln!("Warning: Unrecognized sequence file format, assuming FASTA");
+                return count_fasta_sequences(reader);
             }
         }
     }
     
-    count
+    Ok(sequence_count)
 }
 
-// Generate comprehensive statistics file
+/// Generates a detailed statistics file
 fn generate_statistics_file(
-    output_file: &str,
+    stats_file: &str,
     taxid_readid_map: &HashMap<String, HashSet<String>>,
     original_taxids: &HashSet<String>,
-    expanded_taxids: &HashSet<String>,
-    total_extracted: usize,
-    total_sequences: usize
-) -> Result<(), Box<dyn std::error::Error>> {
+    total_sequences: usize,
+    args: &ExtractArgs
+) -> Result<(), Box<dyn Error>> {
+    let file = File::create(stats_file)?;
+    
     // Create a large buffer for writing
-    let file = File::create(output_file)?;
-    let mut writer = BufWriter::with_capacity(256 * 1024, file);
+    let mut writer = BufWriter::with_capacity(BUFFER_SIZE, file);
     
     // Calculate statistics once to avoid repeated calculations
-    let extraction_percentage = (total_extracted as f64 / total_sequences as f64) * 100.0;
-    let additional_taxids = expanded_taxids.len() - original_taxids.len();
+    let mut total_extracted = 0;
+    let mut total_original_taxids = 0;
+    let mut total_expanded_taxids = 0;
     
     // Counters for summary statistics
-    let mut original_count = 0;
-    let mut expanded_count = 0;
+    let mut orig_sequences = 0;
+    let mut expanded_sequences = 0;
     
-    // Pre-calculate taxid counts and statistics at once
+    // Pre-calculate taxid counts and statistics all at once
     // This avoids traversing the HashMap multiple times
-    let mut taxid_stats: Vec<(String, bool, usize, f64, f64)> = Vec::with_capacity(taxid_readid_map.len());
+    let mut stats: Vec<(String, usize, bool)> = Vec::with_capacity(taxid_readid_map.len());
     
     for (taxid, readids) in taxid_readid_map {
-        let is_original = original_taxids.contains(taxid);
         let count = readids.len();
-        let percent_of_extracted = (count as f64 / total_extracted as f64) * 100.0;
-        let percent_of_total = (count as f64 / total_sequences as f64) * 100.0;
+        total_extracted += count;
         
-        // Update counters
+        let is_original = original_taxids.contains(taxid);
         if is_original {
-            original_count += count;
+            total_original_taxids += 1;
+            orig_sequences += count;
         } else {
-            expanded_count += count;
+            total_expanded_taxids += 1;
+            expanded_sequences += count;
         }
         
-        taxid_stats.push((
-            taxid.clone(),
-            is_original,
-            count,
-            percent_of_extracted,
-            percent_of_total
-        ));
+        stats.push((taxid.clone(), count, is_original));
     }
     
     // Sort by number of sequences (descending)
-    taxid_stats.sort_by(|a, b| b.2.cmp(&a.2));
+    stats.sort_by(|a, b| b.1.cmp(&a.1));
     
     // Calculate percentages for the summary
-    let original_percent = if total_extracted > 0 {
-        (original_count as f64 / total_extracted as f64) * 100.0
-    } else {
-        0.0
-    };
-    
-    let expanded_percent = if total_extracted > 0 {
-        (expanded_count as f64 / total_extracted as f64) * 100.0
+    let percent_extracted = if total_sequences > 0 {
+        (total_extracted as f64 / total_sequences as f64) * 100.0
     } else {
         0.0
     };
     
     // Write metadata as comments (lines starting with #)
     // These will be recognized as comments by pandas, R, and other tools
-    writeln!(writer, "# Extraction Statistics")?;
-    writeln!(writer, "# Generated: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))?;
-    writeln!(writer, "# ")?;
-    writeln!(writer, "# Summary:")?;
-    writeln!(writer, "# Total sequences in input: {}", total_sequences)?;
-    writeln!(writer, "# Total sequences extracted: {} ({:.2}%)", 
-        total_extracted, 
-        extraction_percentage
-    )?;
-    writeln!(writer, "# ")?;
-    writeln!(writer, "# Taxonomic IDs summary:")?;
-    writeln!(writer, "# Original taxids: {}", original_taxids.len())?;
-    writeln!(writer, "# Expanded taxids: {}", expanded_taxids.len())?;
-    writeln!(writer, "# Additional taxids from hierarchy: {}", additional_taxids)?;
-    writeln!(writer, "# ")?;
-    writeln!(writer, "# Original taxids yielded {} sequences ({:.2}% of extracted)", 
-        original_count, original_percent)?;
-    
-    if expanded_taxids.len() > original_taxids.len() {
-        writeln!(writer, "# Expanded taxids yielded {} sequences ({:.2}% of extracted)",
-            expanded_count, expanded_percent)?;
+    writeln!(writer, "# KrakenClip Extraction Statistics")?;
+    writeln!(writer, "# Date: {}", chrono::Local::now().format("%Y-%m-%d %H:%M:%S"))?;
+    writeln!(writer, "# Input file: {}", args.sequence)?;
+    writeln!(writer, "# Kraken output: {}", args.log)?;
+    if let Some(ref report) = args.report {
+        writeln!(writer, "# Kraken report: {}", report)?;
     }
+    writeln!(writer, "# Include children: {}", args.include_children)?;
+    writeln!(writer, "# Include parents: {}", args.include_parents)?;
+    writeln!(writer, "# Exclude mode: {}", args.exclude)?;
+    writeln!(writer, "# Total sequences in input: {}", total_sequences)?;
+    writeln!(writer, "# Total sequences extracted: {} ({:.2}%)", total_extracted, percent_extracted)?;
+    writeln!(writer, "# Original taxids: {} (sequences: {})", total_original_taxids, orig_sequences)?;
+    writeln!(writer, "# Expanded taxids: {} (sequences: {})", total_expanded_taxids, expanded_sequences)?;
+    writeln!(writer)?;
     
     // Write the CSV header - common CSV format with clear field names
-    // Using descriptive column names compatible with data analysis software
-    writeln!(writer, "taxid,origin,sequences,percent_of_extracted,percent_of_total")?;
+    // Use descriptive column names compatible with data analysis software
+    writeln!(writer, "taxid,sequences,percent_of_extracted,percent_of_total,is_original")?;
     
     // Write detailed statistics as CSV rows
-    for (taxid, is_original, count, percent_extracted, percent_total) in &taxid_stats {
-        let origin = if *is_original { "Original" } else { "Expanded" };
+    for (taxid, count, is_original) in stats {
+        let percent_of_extracted = if total_extracted > 0 {
+            (count as f64 / total_extracted as f64) * 100.0
+        } else {
+            0.0
+        };
         
-        writeln!(writer, "{},{},{},{:.2},{:.2}",
-            taxid, origin, count, percent_extracted, percent_total)?;
+        let percent_of_total = if total_sequences > 0 {
+            (count as f64 / total_sequences as f64) * 100.0
+        } else {
+            0.0
+        };
+        
+        writeln!(writer, "{},{},{:.4},{:.4},{}", taxid, count, percent_of_extracted, percent_of_total, is_original)?;
     }
     
     // Ensure all data is written
@@ -523,67 +522,68 @@ fn generate_statistics_file(
     Ok(())
 }
 
-// Recursively collect all child taxids
-fn collect_all_children(node: &krk_parser::TaxonEntry, target_taxid: u64, taxids: &mut HashSet<String>) {
-    // Pre-allocate space to avoid reallocations during collection
-    // We estimate each node could have approximately 10 children with a tree depth of 10
-    if taxids.capacity() < taxids.len() + 100 {
+/// Recursively finds all child taxids
+fn find_all_child_taxids(node: &krk_parser::TaxonEntry, target_taxid: u32, taxids: &mut HashSet<String>) {
+    // Pre-allocate space to avoid reallocations
+    // We estimate that each node might have approximately 10 children with a tree depth of 10
+    if taxids.capacity() < 100 {
         taxids.reserve(100);
     }
     
     // Check if this node is the target
-    if node.taxon_id == target_taxid {
+    if node.taxid == target_taxid {
         // If found, add all children recursively
-        add_children_recursive(node, taxids);
+        add_all_children_to_taxids(node, taxids);
         return;
     }
     
-    // Otherwise, search in children
+    // Otherwise, search in the children
     for child in &node.children {
-        collect_all_children(child, target_taxid, taxids);
+        find_all_child_taxids(child, target_taxid, taxids);
     }
 }
 
-// Add all children of a node to the taxids set
-fn add_children_recursive(node: &krk_parser::TaxonEntry, taxids: &mut HashSet<String>) {
+/// Adds all children of a node to the taxid set
+fn add_all_children_to_taxids(node: &krk_parser::TaxonEntry, taxids: &mut HashSet<String>) {
     // Reserve space to avoid frequent reallocations
-    let children_count = node.children.len();
-    if taxids.capacity() < taxids.len() + children_count {
-        taxids.reserve(children_count);
+    if taxids.capacity() < taxids.len() + node.children.len() {
+        taxids.reserve(node.children.len() * 2);
     }
     
     for child in &node.children {
-        taxids.insert(child.taxon_id.to_string());
-        add_children_recursive(child, taxids);
+        taxids.insert(child.taxid.to_string());
+        // Process the children recursively
+        add_all_children_to_taxids(child, taxids);
     }
 }
 
-// Recursively find all parent taxids
-fn collect_all_parents(node: &krk_parser::TaxonEntry, target_taxid: u64, taxids: &mut HashSet<String>) {
+/// Recursively finds all parent taxids
+fn find_all_parent_taxids(root: &krk_parser::TaxonEntry, target_taxid: u32, taxids: &mut HashSet<String>) {
     // Use a vector with pre-allocated capacity for the path
     // Most taxonomies don't exceed 30-40 levels of depth
-    let mut path = Vec::with_capacity(40);
-    find_parents_recursive(node, target_taxid, &mut path, taxids);
+    let mut path = Vec::with_capacity(50);
+    
+    // Find parents using DFS with path tracking
+    find_parents_dfs(root, target_taxid, &mut path, taxids);
 }
 
-// Find parents using DFS with path tracking
-fn find_parents_recursive(
-    node: &krk_parser::TaxonEntry, 
-    target_taxid: u64, 
-    path: &mut Vec<u64>, 
+fn find_parents_dfs(
+    node: &krk_parser::TaxonEntry,
+    target_taxid: u32,
+    path: &mut Vec<u32>,
     taxids: &mut HashSet<String>
 ) -> bool {
     // Add current node to the path
-    path.push(node.taxon_id);
+    path.push(node.taxid);
     
     // If this is the target node, add all parents from the path
-    if node.taxon_id == target_taxid {
-        // Reserve space for the number of parents to be added
+    if node.taxid == target_taxid {
+        // Reserve space for the number of parents to add
         if taxids.capacity() < taxids.len() + path.len() {
             taxids.reserve(path.len());
         }
         
-        // Add all nodes from the path except the last one (current node)
+        // Add all nodes from the path except the last (current node)
         for &parent_id in path.iter().take(path.len() - 1) {
             taxids.insert(parent_id.to_string());
         }
@@ -592,9 +592,9 @@ fn find_parents_recursive(
         return true;
     }
     
-    // Search in children
+    // Search in the children
     for child in &node.children {
-        if find_parents_recursive(child, target_taxid, path, taxids) {
+        if find_parents_dfs(child, target_taxid, path, taxids) {
             path.pop(); // Restore path for backtracking
             return true;
         }
@@ -605,71 +605,19 @@ fn find_parents_recursive(
     false
 }
 
-fn run_generate(matches: &clap::ArgMatches) {
-    let output_file = matches.value_of("OUTPUT").unwrap();
-    
-    let num_lines = matches.value_of("LINES")
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(100_000);
-        
-    let data_type = matches.value_of("TYPE").unwrap_or("random");
-    
-    match generate_test_data::generate_data(output_file, num_lines, data_type) {
-        Ok(_) => println!("Test data generated successfully"),
-        Err(e) => eprintln!("Error generating test data: {}", e),
-    }
-}
-
-fn process_report(matches: &clap::ArgMatches, _report: &krk_parser::KrakenReport) {
-    if matches.is_present("INFO") {
-        display_info(_report);
-    }
-
-    if let Some(search_term) = matches.value_of("SEARCH") {
-        search_taxon(_report, search_term);
-    }
-
-    if let Some(filter) = matches.value_of("FILTER") {
-        apply_filter(_report, filter);
-    }
-}
-
-fn display_info(_report: &krk_parser::KrakenReport) {
-    println!("Taxonomic Information:");
-    // Add aggregated information as needed
-}
-
-fn search_taxon(_report: &krk_parser::KrakenReport, search_term: &str) {
-    println!("Searching for taxon: {}", search_term);
-    // Implement search functionality
-}
-
-fn apply_filter(_report: &krk_parser::KrakenReport, filter: &str) {
-    println!("Applying filter: {}", filter);
-    // Implement filter functionality
-}
-
-fn run_abundance_matrix(matches: &clap::ArgMatches) {
-    let input_files = matches.values_of("INPUT").unwrap().collect::<Vec<&str>>();
-    let output_file = matches.value_of("OUTPUT").unwrap();
-    let level = matches.value_of("LEVEL").unwrap();
-    let min_abundance = matches.value_of("MIN_ABUNDANCE").unwrap().parse::<f64>().unwrap();
-    let normalize = matches.is_present("NORMALIZE");
-    let include_unclassified = matches.is_present("UNCLASSIFIED");
-    let convert_to_proportions = matches.is_present("PROPORTIONS") || !matches.is_present("ABSOLUTE_COUNTS");
-    
+/// Implements the 'abundance-matrix' command
+fn run_abundance_matrix(args: AbundanceMatrixArgs) -> Result<(), Box<dyn Error>> {
     // Validate the taxonomic level
-    if !validate_taxonomic_level(level) {
-        eprintln!("Error: The taxonomic level '{}' is not valid. Use K, P, C, O, F, G or S.", level);
-        return;
+    if !validate_taxonomic_level(&args.level) {
+        return Err(format!("Error: The taxonomic level '{}' is not valid. Use K, P, C, O, F, G or S.", args.level).into());
     }
 
     // Create a new abundance matrix
-    let mut matrix = AbundanceMatrix::new(level);
-    matrix.set_force_include_unclassified(include_unclassified);
+    let mut matrix = AbundanceMatrix::new(&args.level);
+    matrix.set_force_include_unclassified(args.include_unclassified);
 
     // Process each input file
-    for (i, file) in input_files.iter().enumerate() {
+    for (i, file) in args.input.iter().enumerate() {
         // Use the filename as the sample name (removing extension and path)
         let default_name = format!("sample_{}", i + 1);
         let sample_name = Path::new(file)
@@ -681,18 +629,32 @@ fn run_abundance_matrix(matches: &clap::ArgMatches) {
         
         // Parse the report and add it to the matrix
         let (report, _) = krk_parser::parse_kraken2_report(file);
-        matrix.add_sample(&report, sample_name, min_abundance, normalize);
+        matrix.add_sample(&report, sample_name, args.min_abundance, args.normalize);
     }
 
-    // Convert counts to proportions (now default, except if --absolute-counts is specified)
-    if convert_to_proportions && !normalize {
+    // Convert counts to proportions (default behavior unless --absolute-counts is specified)
+    let convert_to_proportions = args.proportions || !args.absolute_counts;
+    if convert_to_proportions && !args.normalize {
         matrix.transform_to_proportions();
     }
 
     // Generate the abundance matrix in TSV format
-    match matrix.write_matrix(output_file) {
-        Ok(_) => println!("Abundance matrix successfully generated in: {}", output_file),
-        Err(e) => eprintln!("Error generating abundance matrix: {}", e),
+    match matrix.write_matrix(&args.output) {
+        Ok(_) => println!("Abundance matrix successfully generated in: {}", args.output),
+        Err(e) => return Err(format!("Error generating abundance matrix: {}", e).into()),
     }
+    
+    Ok(())
+}
+
+/// Implements the 'generate-test-data' command
+fn run_generate_test_data(args: GenerateTestDataArgs) -> Result<(), Box<dyn Error>> {
+    // Add aggregated information as needed
+    match generate_test_data::generate_data(&args.output, args.lines, &args.r#type) {
+        Ok(_) => println!("Test data generated successfully"),
+        Err(e) => return Err(format!("Error generating test data: {}", e).into()),
+    }
+    
+    Ok(())
 }
 
