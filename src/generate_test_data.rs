@@ -1,7 +1,6 @@
 use std::fs::File;
 use std::io::{BufWriter, Write};
-use rand::{Rng, prelude::SliceRandom};
-use rand::distributions::Distribution;
+use rand::Rng;
 use std::time::Instant;
 
 /// Structure to define generation parameters
@@ -124,7 +123,7 @@ pub fn generate_test_data(params: &GeneratorParams) -> Result<(), Box<dyn std::e
     let child_fragments = max_fragments - total_fragments;
     
     let mut total_lines = 2; // Already wrote 2 lines
-    let mut fragments_generated = distribute_fragments(&mut writer, child_fragments, 1, 
+    let fragments_generated = distribute_fragments(&mut writer, child_fragments, 1, 
                              0, params.max_depth, params.max_children, &mut rng)?;
     
     total_lines += fragments_generated.0;
@@ -177,7 +176,7 @@ impl WeightedDistribution {
 fn distribute_fragments<R: Rng>(
     writer: &mut BufWriter<File>,
     fragments: u64,
-    parent_id: u64,
+    _parent_id: u64,
     depth: usize,
     max_depth: usize,
     max_children: usize,
@@ -207,8 +206,8 @@ fn distribute_fragments<R: Rng>(
     
     // Randomly assign fragments to children
     let mut child_fragments = vec![0; num_children];
-    let mut direct_fragments = fragments / 5; // 20% direct, 80% in children
-    let mut remaining = fragments - direct_fragments;
+    let direct_fragments = fragments / 5; // 20% direct, 80% in children
+    let remaining = fragments - direct_fragments;
     
     // Distribute 80% of fragments among children
     for _ in 0..remaining {
@@ -264,7 +263,7 @@ fn distribute_fragments<R: Rng>(
         total_lines += 1;
         
         // Recursively distribute fragments to this child's descendants
-        let (child_lines, child_frags) = distribute_fragments(
+        let (child_lines, _child_frags) = distribute_fragments(
             writer,
             fragments_this_child,
             taxid,
@@ -281,9 +280,8 @@ fn distribute_fragments<R: Rng>(
     Ok((total_lines, total_fragments + direct_fragments))
 }
 
-/// DEPRECATED: Generate test data with the old interface
-/// 
-/// Use `generate_data` instead for a more flexible interface.
+/// Run the generator with the specified parameters
+#[allow(dead_code)]
 pub fn run_generator(output_file: &str, num_lines: usize, max_depth: usize, max_children: usize, max_fragments: u64) -> Result<(), Box<dyn std::error::Error>> {
     let params = GeneratorParams {
         output_file: output_file.to_string(),

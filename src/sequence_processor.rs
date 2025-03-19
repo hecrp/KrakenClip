@@ -5,7 +5,6 @@ use std::error::Error;
 use rayon::prelude::*;
 use memchr::memchr;
 use std::sync::{Arc, Mutex};
-use std::path::Path;
 
 // Optimized buffer size constant for efficient I/O operations
 const BUFFER_SIZE: usize = 1024 * 1024; // 1MB buffer
@@ -48,7 +47,7 @@ pub fn process_sequence_files(
         // This improves performance by reducing thread contention
         let mut local_buffer = Vec::with_capacity(BUFFER_SIZE * 2);
         
-        let mut read_count = 0;
+        let mut _read_count = 0;
         let mut local_matched_count = 0;
         
         loop {
@@ -59,7 +58,7 @@ pub fn process_sequence_files(
             }
 
             if buffer[0] == b'>' || buffer[0] == b'@' {
-                read_count += 1;
+                _read_count += 1;
                 let id = parse_id(&buffer);
                 let should_write = if exclude {
                     !save_readids.contains(id)
@@ -120,7 +119,7 @@ pub fn process_sequence_files(
     })?;
 
     // Asegurarse de que todos los datos se escriban en disco
-    let arc_count = Arc::try_unwrap(matched_count).expect("Error al recuperar el contador").into_inner().unwrap();
+    let _arc_count = Arc::try_unwrap(matched_count).expect("Error al recuperar el contador").into_inner().unwrap();
     
     // Ensure all data is written to disk by unwrapping the Arc and Mutex
     // This is a Rust-specific pattern for safely reclaiming exclusive ownership

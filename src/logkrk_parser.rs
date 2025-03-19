@@ -3,7 +3,6 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::error::Error;
 use memchr::memchr;
-use std::path::Path;
 
 /// Optimized buffer size for efficient file reading
 const BUFFER_SIZE: usize = 512 * 1024; // 512KB
@@ -17,6 +16,7 @@ const LF_CHAR: u8 = b'\n';
 pub enum KrakenParseError {
     IoError(std::io::Error),
     Utf8Error(std::str::Utf8Error),
+    #[allow(dead_code)]
     MalformedLine(String),
 }
 
@@ -58,6 +58,7 @@ type KrakenResult<T> = Result<T, KrakenParseError>;
 ///
 /// # Returns
 /// * `Result<HashSet<String>, Box<dyn Error>>` - Set of matching read IDs
+#[allow(dead_code)]
 pub fn parse_kraken_output(kraken_output: &str, save_taxids: &HashSet<String>) -> Result<HashSet<String>, Box<dyn Error>> {
     let mut taxid_readid_map = HashMap::new();
     let result = parse_kraken_output_with_taxids(kraken_output, save_taxids, &mut taxid_readid_map)?;

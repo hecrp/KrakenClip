@@ -9,7 +9,7 @@ use std::collections::{HashSet, HashMap};
 use crate::logkrk_parser;
 use crate::sequence_processor;
 use crate::generate_test_data;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use chrono;
 use crate::abundance_matrix::{AbundanceMatrix, validate_taxonomic_level};
 use std::error::Error;
@@ -181,8 +181,9 @@ fn run_analyze(args: AnalyzeArgs) -> Result<(), Box<dyn Error>> {
     let before_memory = memory_stats().map(|s| s.physical_mem).unwrap_or(0);
     let start_time = Instant::now();
     
-    // Parse the Kraken2 report
-    let (report, parse_time) = krk_parser::parse_kraken2_report(&args.report);
+    // Parse the Kraken2 report with proper error handling
+    let (report, parse_time) = krk_parser::parse_kraken2_report(&args.report)
+        .map_err(|e| format!("Error parsing Kraken2 report file '{}': {}", args.report, e))?;
     
     // Build the hierarchy if necessary
     let hierarchy_start = Instant::now();
@@ -220,29 +221,23 @@ fn run_analyze(args: AnalyzeArgs) -> Result<(), Box<dyn Error>> {
 
 /// Implements the 'extract' command
 fn run_extract(args: ExtractArgs) -> Result<(), Box<dyn Error>> {
-    // Parse the list of taxids
-    let taxids: HashSet<String> = args.taxids
-        .split(',')
+    // Parsear los taxids de la línea de comandos
+    let taxids: HashSet<String> = args.taxids.split(',')
         .map(|s| s.trim().to_string())
         .collect();
     
-    // Estimate the approximate number of taxids to pre-allocate memory
-    let mut expanded_taxids = HashSet::with_capacity(taxids.len() * 10);
+    // Usamos el conjunto original para las estadísticas
+    let original_taxids = taxids.clone();
     
-    // Pre-allocate memory for the sets
-    let mut readids = HashSet::with_capacity(taxids.len() * 1000);
+    // Almacena los readids después de la consulta
+    let readids;
     
-    // Fill the taxid set
-    for taxid in &taxids {
-        expanded_taxids.insert(taxid.clone());
-    }
+    // Almacena los mapeos de taxid a readids
+    let mut taxid_readid_map: HashMap<String, HashSet<String>> = HashMap::new();
     
-    // Map to track which taxid each readid belongs to
-    // We estimate an average of 1000 sequences per taxid
-    let mut taxid_readid_map: HashMap<String, HashSet<String>> = HashMap::with_capacity(taxids.len());
-    
-    // Save the original taxids before expansion for tracking
-    let original_taxids = expanded_taxids.clone();
+    // Crear un conjunto expandido para almacenar todos los taxids
+    // (originales + padres/hijos)
+    let mut expanded_taxids = taxids.clone();
     
     // If we need to include children or parents, we need the report file
     if (args.include_children || args.include_parents) && args.report.is_some() {
@@ -251,7 +246,10 @@ fn run_extract(args: ExtractArgs) -> Result<(), Box<dyn Error>> {
         println!("Reading taxonomy from report file: {}", report_file);
         
         // Parse the Kraken2 report to get the taxonomic tree
-        let (report, _) = krk_parser::parse_kraken2_report(&report_file);
+        let (report, _) = match krk_parser::parse_kraken2_report(&report_file) {
+            Ok(result) => result,
+            Err(e) => return Err(format!("Error parsing Kraken2 report file '{}': {}", report_file, e).into())
+        };
         
         // Expand the set of taxids according to the options
         let mut expanded_count = 0;
@@ -259,11 +257,11 @@ fn run_extract(args: ExtractArgs) -> Result<(), Box<dyn Error>> {
         // Estimate initial size for the expanded set
         // For large taxonomies, could be 10x the original size
         let mut new_taxids = HashSet::with_capacity(if taxids.len() < 10 {
-            // For small sets of taxids, we might have many children
-            taxids.len() * 100
-        } else {
+                // For small sets of taxids, we might have many children
+                taxids.len() * 100
+            } else {
             // For larger sets, the relative expansion is usually smaller
-            taxids.len() * 10
+                taxids.len() * 10
         });
         
         for taxid in &taxids {
@@ -305,42 +303,40 @@ fn run_extract(args: ExtractArgs) -> Result<(), Box<dyn Error>> {
         return Err("Error: A report file (--report) is required when using --include-children or --include-parents options.".into());
     }
     
-    // Track the total sequences in the input file
-    let mut total_sequences = 0;
-    
     // Extract the sequences
     match logkrk_parser::parse_kraken_output_with_taxids(&args.log, &expanded_taxids, &mut taxid_readid_map) {
         Ok(ids) => {
             readids = ids;
-            total_sequences = count_sequences_in_file(&args.sequence)?;
+            // Cambiar la siguiente línea si total_sequences no se usa después
+            let total_sequences = count_sequences_in_file(&args.sequence)?;
             
             match sequence_processor::process_sequence_files(&[args.sequence.clone()], &readids, &args.output, args.exclude) {
                 Ok(_) => {
                     println!("Sequences extracted successfully to {}", args.output);
-                    println!("{} sequences matching {} taxids",
+                    println!("{} sequences matching {} taxids", 
                         readids.len(),
                         expanded_taxids.len()
                     );
-                    println!("Total {} sequences: {}",
+                    println!("Total {} sequences: {}", 
                         if args.exclude { "excluded" } else { "extracted" },
                         readids.len()
                     );
                 }
                 Err(e) => return Err(Box::new(std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))),
             }
-            
-            // Generate statistics file if requested
+                    
+                    // Generate statistics file if requested
             if let Some(ref stats_file) = args.stats_output {
-                match generate_statistics_file(
+                        match generate_statistics_file(
                     &stats_file,
-                    &taxid_readid_map,
-                    &original_taxids,
+                            &taxid_readid_map,
+                            &original_taxids,
                     total_sequences,
                     &args
-                ) {
-                    Ok(_) => println!("Statistics written to {}", stats_file),
-                    Err(e) => eprintln!("Error writing statistics: {}", e),
-                }
+                        ) {
+                            Ok(_) => println!("Statistics written to {}", stats_file),
+                            Err(e) => eprintln!("Error writing statistics: {}", e),
+                        }
             }
         }
         Err(e) => return Err(format!("Error processing sequence file: {}", e).into()),
@@ -375,16 +371,16 @@ fn count_fasta_sequences(mut reader: BufReader<File>) -> Result<usize, Box<dyn E
     // Identify bytes for sequence identifiers
     let header_char = b'>';
     
-    // FASTA file
+            // FASTA file
     // Count each line starting with '>'
-    loop {
-        buffer.clear();
+            loop {
+                buffer.clear();
         let bytes_read = reader.read_until(b'\n', &mut buffer)?;
-        
-        if bytes_read == 0 {
-            break;
-        }
-        
+                
+                if bytes_read == 0 {
+                    break;
+                }
+                
         if !buffer.is_empty() && buffer[0] == header_char {
             sequence_count += 1;
         }
@@ -402,14 +398,14 @@ fn count_fastq_sequences(mut reader: BufReader<File>) -> Result<usize, Box<dyn E
     
     // FASTQ file
     // In FASTQ each record has 4 lines, only count the first one
-    loop {
-        buffer.clear();
+            loop {
+                buffer.clear();
         let bytes_read = reader.read_until(b'\n', &mut buffer)?;
-        
-        if bytes_read == 0 {
-            break;
-        }
-        
+                
+                if bytes_read == 0 {
+                    break;
+                }
+                
         line_count += 1;
         
         if line_count % 4 == 1 {
@@ -562,13 +558,13 @@ fn find_all_parent_taxids(root: &krk_parser::TaxonEntry, target_taxid: u32, taxi
     // Use a vector with pre-allocated capacity for the path
     // Most taxonomies don't exceed 30-40 levels of depth
     let mut path = Vec::with_capacity(50);
-    
-    // Find parents using DFS with path tracking
+
+// Find parents using DFS with path tracking
     find_parents_dfs(root, target_taxid, &mut path, taxids);
 }
 
 fn find_parents_dfs(
-    node: &krk_parser::TaxonEntry,
+    node: &krk_parser::TaxonEntry, 
     target_taxid: u32,
     path: &mut Vec<u32>,
     taxids: &mut HashSet<String>
@@ -627,8 +623,9 @@ fn run_abundance_matrix(args: AbundanceMatrixArgs) -> Result<(), Box<dyn Error>>
         
         println!("Processing sample: {}", sample_name);
         
-        // Parse the report and add it to the matrix
-        let (report, _) = krk_parser::parse_kraken2_report(file);
+        // Parse the report and add it to the matrix with proper error handling
+        let (report, _) = krk_parser::parse_kraken2_report(file)
+            .map_err(|e| format!("Error parsing Kraken2 report file '{}': {}", file, e))?;
         matrix.add_sample(&report, sample_name, args.min_abundance, args.normalize);
     }
 

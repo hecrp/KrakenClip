@@ -11,7 +11,6 @@ use std::path::Path;
 const BUFFER_SIZE: usize = 512 * 1024; // 512KB balances memory usage and read performance
 // Raw byte literals are used for faster comparison operations (avoids UTF-8 decoding)
 const TAB_CHAR: u8 = b'\t';
-const NL_CHAR: u8 = b'\n';
 const SPACE_CHAR: u8 = b' ';
 const NEWLINE_CHAR: u8 = b'\n';
 
@@ -25,6 +24,7 @@ pub struct TaxonEntry {
     pub rank: String,      // Taxonomic rank (e.g., "P" for phylum, "G" for genus)
     pub taxid: u32,        // NCBI Taxonomy identifier as u32 for memory efficiency
     pub name: String,      // Scientific name of the taxon
+    #[allow(dead_code)]
     pub depth: usize,      // Depth in the taxonomy tree (number of ancestors)
     pub children: Vec<TaxonEntry>, // Child nodes (descendant taxa)
     
@@ -68,6 +68,7 @@ impl TaxonEntry {
     
     /// Add a child node to this taxon
     /// This establishes the parent-child relationship in the taxonomy tree
+    #[allow(dead_code)]
     fn add_child(&mut self, child: TaxonEntry) {
         self.children.push(child);
     }
@@ -89,7 +90,7 @@ impl Default for KrakenReport {
 
 /// String cache to avoid memory duplication for common rank codes
 /// This significantly reduces memory usage for large reports
-struct StringCache {
+pub struct StringCache {
     rank_codes: Vec<String>,
 }
 
@@ -135,11 +136,15 @@ impl StringCache {
 
 // Highly optimized line parser using pointers and avoiding unnecessary allocations
 #[inline(always)]
-pub fn parse_line(line: &[u8], string_cache: &mut StringCache) -> Option<TaxonEntry> {
+pub fn parse_line(line: &[u8], string_cache: &mut StringCache, line_number: Option<usize>) -> Option<TaxonEntry> {
     // Use fast tab search with memchr for vectorized byte searching
     // This is significantly faster than manual iteration
     let tab_positions: Vec<usize> = memchr_iter(TAB_CHAR, line).take(5).collect();
     if tab_positions.len() < 5 {
+        if let Some(line_num) = line_number {
+            eprintln!("Warning: Line {} does not have enough tab-separated fields (expected at least 5, found {})", 
+                     line_num, tab_positions.len());
+        }
         return None; // Not enough fields
     }
     
@@ -164,29 +169,97 @@ pub fn parse_line(line: &[u8], string_cache: &mut StringCache) -> Option<TaxonEn
     // Extract name efficiently by slicing the original buffer
     // Avoids allocating a new string until necessary
     let name_bytes = &line[name_start + level * 2..];
-    let name = std::str::from_utf8(name_bytes).unwrap_or("").trim();
+    let name = match std::str::from_utf8(name_bytes) {
+        Ok(s) => s.trim(),
+        Err(e) => {
+            if let Some(line_num) = line_number {
+                eprintln!("Warning: UTF-8 encoding error in taxon name at line {}: {}", line_num, e);
+            }
+            ""
+        }
+    };
     
     // Fast parsing of numeric values with specialized parsers
     // Using fast_float for improved float parsing performance
     let percentage_bytes = &line[field_starts[0]..field_ends[0]];
-    let percentage = fast_float::parse::<f32, _>(std::str::from_utf8(percentage_bytes).unwrap_or("0.0")).unwrap_or(0.0);
+    let percentage = match std::str::from_utf8(percentage_bytes) {
+        Ok(s) => fast_float::parse::<f32, _>(s).unwrap_or_else(|_| {
+            if let Some(line_num) = line_number {
+                eprintln!("Warning: Failed to parse percentage value '{}' at line {}", s, line_num);
+            }
+            0.0
+        }),
+        Err(_) => {
+            if let Some(line_num) = line_number {
+                eprintln!("Warning: Invalid UTF-8 in percentage field at line {}", line_num);
+            }
+            0.0
+        }
+    };
     
     // Parse integer counts directly from byte slices
     let clade_bytes = &line[field_starts[1]..field_ends[1]];
-    let clade_fragments = std::str::from_utf8(clade_bytes).unwrap_or("0").parse::<u64>().unwrap_or(0);
+    let clade_fragments = match std::str::from_utf8(clade_bytes) {
+        Ok(s) => s.parse::<u64>().unwrap_or_else(|_| {
+            if let Some(line_num) = line_number {
+                eprintln!("Warning: Failed to parse clade reads value '{}' at line {}", s, line_num);
+            }
+            0
+        }),
+        Err(_) => {
+            if let Some(line_num) = line_number {
+                eprintln!("Warning: Invalid UTF-8 in clade reads field at line {}", line_num);
+            }
+            0
+        }
+    };
     
     let direct_bytes = &line[field_starts[2]..field_ends[2]];
-    let direct_fragments = std::str::from_utf8(direct_bytes).unwrap_or("0").parse::<u64>().unwrap_or(0);
+    let direct_fragments = match std::str::from_utf8(direct_bytes) {
+        Ok(s) => s.parse::<u64>().unwrap_or_else(|_| {
+            if let Some(line_num) = line_number {
+                eprintln!("Warning: Failed to parse direct reads value '{}' at line {}", s, line_num);
+            }
+            0
+        }),
+        Err(_) => {
+            if let Some(line_num) = line_number {
+                eprintln!("Warning: Invalid UTF-8 in direct reads field at line {}", line_num);
+            }
+            0
+        }
+    };
     
     // Optimization for rank codes using string cache to avoid duplication
     // This significantly reduces memory usage for large reports with many identical ranks
     let rank_bytes = &line[field_starts[3]..field_ends[3]];
-    let rank_str = std::str::from_utf8(rank_bytes).unwrap_or("").trim();
+    let rank_str = match std::str::from_utf8(rank_bytes) {
+        Ok(s) => s.trim(),
+        Err(_) => {
+            if let Some(line_num) = line_number {
+                eprintln!("Warning: Invalid UTF-8 in rank field at line {}", line_num);
+            }
+            ""
+        }
+    };
     let rank_code = string_cache.get_rank_code(rank_str);
     
     // Parse taxon ID
     let taxon_bytes = &line[field_starts[4]..field_ends[4]];
-    let taxon_id = std::str::from_utf8(taxon_bytes).unwrap_or("0").parse::<u64>().unwrap_or(0);
+    let taxon_id = match std::str::from_utf8(taxon_bytes) {
+        Ok(s) => s.parse::<u64>().unwrap_or_else(|_| {
+            if let Some(line_num) = line_number {
+                eprintln!("Warning: Failed to parse taxon ID value '{}' at line {}", s, line_num);
+            }
+            0
+        }),
+        Err(_) => {
+            if let Some(line_num) = line_number {
+                eprintln!("Warning: Invalid UTF-8 in taxon ID field at line {}", line_num);
+            }
+            0
+        }
+    };
     
     // Construct and return the taxon entry
     Some(TaxonEntry {
@@ -220,7 +293,7 @@ pub fn build_hierarchy_optimized(entries: Vec<TaxonEntry>) -> Vec<TaxonEntry> {
     // Taxonomic hierarchies rarely exceed 20 levels in depth
     let mut stack: Vec<TaxonEntry> = Vec::with_capacity(20);
     
-    for mut entry in entries {
+    for entry in entries {
         // Process entries based on their level in the hierarchy
         // This implements a non-recursive tree construction algorithm
         
@@ -288,8 +361,15 @@ impl OptimizedBuffer {
         line_buffer.clear();
         
         // Check if buffer needs to be filled
-        if self.pos >= self.cap && self.fill_buffer()? == 0 {
-            return Ok(false); // EOF
+        if self.pos >= self.cap {
+            match self.fill_buffer() {
+                Ok(0) => return Ok(false), // EOF
+                Ok(_) => {}, // Successfully filled buffer
+                Err(e) => return Err(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to read from file: {}", e)
+                )),
+            }
         }
         
         loop {
@@ -309,17 +389,25 @@ impl OptimizedBuffer {
             line_buffer.extend_from_slice(&self.buffer[self.pos..self.cap]);
             
             // Fill the buffer again
-            if self.fill_buffer()? == 0 {
-                // EOF - return true if we read any data
-                return Ok(!line_buffer.is_empty());
+            match self.fill_buffer() {
+                Ok(0) => {
+                    // EOF - return true if we read any data
+                    return Ok(!line_buffer.is_empty());
+                },
+                Ok(_) => {}, // Successfully filled buffer
+                Err(e) => return Err(std::io::Error::new(
+                    e.kind(),
+                    format!("Failed to read next buffer block: {}", e)
+                )),
             }
         }
     }
 }
 
 // Main analysis function with block processing
-pub fn parse_kraken2_report(file_path: &str) -> (KrakenReport, f64) {
-    let file = File::open(file_path).expect("Failed to open file");
+pub fn parse_kraken2_report(file_path: &str) -> Result<(KrakenReport, f64), std::io::Error> {
+    // Replace expect with proper error handling
+    let file = File::open(file_path)?;
     
     // Estimate size for pre-allocation based on file size
     // Average line length in Kraken reports is ~50 bytes
@@ -337,11 +425,13 @@ pub fn parse_kraken2_report(file_path: &str) -> (KrakenReport, f64) {
     // Pre-allocate entries vector based on estimated line count
     let mut entries = Vec::with_capacity(file_size / 50); // Approximate estimation
     
-    // Parse file line by line
+    // Parse file line by line with line number tracking
+    let mut line_number = 1;
     while buffer.read_line(&mut line_buffer).unwrap_or(false) {
-        if let Some(entry) = parse_line(&line_buffer, &mut string_cache) {
+        if let Some(entry) = parse_line(&line_buffer, &mut string_cache, Some(line_number)) {
             entries.push(entry);
         }
+        line_number += 1;
     }
     
     // Build hierarchical representation from flat entries
@@ -377,11 +467,11 @@ pub fn parse_kraken2_report(file_path: &str) -> (KrakenReport, f64) {
     let duration = start_time.elapsed().as_secs_f64();
     
     // Return the constructed report and parsing duration
-    (KrakenReport {
+    Ok((KrakenReport {
         unclassified,
         root,
         taxon_map,
-    }, duration)
+    }, duration))
 }
 
 // Build taxon map for quick access by ID
@@ -451,7 +541,7 @@ mod tests {
     fn test_parse_line() {
         let test_line = b"50.00\t1000\t500\tP\t123\t  Bacteria";
         let mut cache = StringCache::new();
-        let result = parse_line(test_line, &mut cache);
+        let result = parse_line(test_line, &mut cache, None);
         assert!(result.is_some());
         let entry = result.unwrap();
         assert_eq!(entry.level, 1);

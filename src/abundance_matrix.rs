@@ -2,7 +2,6 @@ use std::collections::{HashMap, HashSet};
 use std::fs::File;
 use std::io::{BufWriter, Write};
 use std::error::Error;
-use std::path::Path;
 use std::cmp::Ordering;
 use crate::krk_parser::{KrakenReport, TaxonEntry};
 
@@ -27,7 +26,9 @@ const UNCLASSIFIED_NAME: &str = "Unclassified";
 #[derive(Debug)]
 pub enum AbundanceMatrixError {
     IoError(std::io::Error),
+    #[allow(dead_code)]
     InvalidLevel(String),
+    #[allow(dead_code)]
     InvalidValue(String),
 }
 
@@ -292,6 +293,7 @@ pub fn validate_taxonomic_level(level: &str) -> bool {
 /// 
 /// # Returns
 /// * `Option<&str>` - Full name of the taxonomic level if valid
+#[allow(dead_code)]
 pub fn get_taxonomic_level_name(level: &str) -> Option<&str> {
     TAXON_LEVELS.iter()
         .find(|(code, _)| *code == level)
