@@ -159,7 +159,8 @@ ARGS:
 
 OPTIONS:
     -h, --help               Print help information
-    -o, --output <o>         Output TSV file for the abundance matrix
+    -o, --output <o>         Output file for the abundance matrix
+        --format <FORMAT>    Output format: tsv (default) or biom [default: tsv]
         --level <LEVEL>      Taxonomic level to aggregate abundances (S=species, G=genus, F=family,
                              O=order, C=class, P=phylum, K=kingdom) [default: S]
         --min-abundance <MIN> Minimum abundance threshold (0.0-100.0) [default: 0.0]
@@ -170,7 +171,10 @@ OPTIONS:
 ```
 
 #### Features
-- Generates a TSV matrix of taxonomic abundances across multiple samples
+- Generates a matrix of taxonomic abundances across multiple samples
+- Supports two output formats:
+  - **TSV (default)**: Standard tab-separated values format
+  - **BIOM**: Biological Observation Matrix format (v1.0.0) for direct integration with microbiome analysis tools
 - Supports all taxonomic levels (species to kingdom)
 - Optional abundance threshold filtering
 - **Uses proportions (percentages) by default** for better comparability between samples
