@@ -12,6 +12,7 @@ use crate::generate_test_data;
 use std::path::Path;
 use chrono;
 use crate::abundance_matrix::{AbundanceMatrix, validate_taxonomic_level};
+use crate::biom::BiomTable;
 use std::error::Error;
 
 const BUFFER_SIZE: usize = 512 * 1024; // 512KB buffer for I/O
@@ -114,9 +115,13 @@ struct AbundanceMatrixArgs {
     #[arg(required = true)]
     input: Vec<String>,
     
-    /// Output TSV file for the abundance matrix
+    /// Output file for the abundance matrix
     #[arg(short, long)]
     output: String,
+    
+    /// Output format (tsv or biom)
+    #[arg(long, default_value = "tsv")]
+    format: String,
     
     /// Taxonomic level for aggregating abundances
     #[arg(long, default_value = "S")]
@@ -608,37 +613,67 @@ fn run_abundance_matrix(args: AbundanceMatrixArgs) -> Result<(), Box<dyn Error>>
         return Err(format!("Error: The taxonomic level '{}' is not valid. Use K, P, C, O, F, G or S.", args.level).into());
     }
 
-    // Create a new abundance matrix
-    let mut matrix = AbundanceMatrix::new(&args.level);
-    matrix.set_force_include_unclassified(args.include_unclassified);
+    match args.format.as_str() {
+        "tsv" => {
+            // Create a new abundance matrix
+            let mut matrix = AbundanceMatrix::new(&args.level);
+            matrix.set_force_include_unclassified(args.include_unclassified);
 
-    // Process each input file
-    for (i, file) in args.input.iter().enumerate() {
-        // Use the filename as the sample name (removing extension and path)
-        let default_name = format!("sample_{}", i + 1);
-        let sample_name = Path::new(file)
-            .file_stem()
-            .and_then(|s| s.to_str())
-            .unwrap_or(&default_name);
-        
-        println!("Processing sample: {}", sample_name);
-        
-        // Parse the report and add it to the matrix with proper error handling
-        let (report, _) = krk_parser::parse_kraken2_report(file)
-            .map_err(|e| format!("Error parsing Kraken2 report file '{}': {}", file, e))?;
-        matrix.add_sample(&report, sample_name, args.min_abundance, args.normalize);
-    }
+            // Process each input file
+            for (i, file) in args.input.iter().enumerate() {
+                // Use the filename as the sample name (removing extension and path)
+                let default_name = format!("sample_{}", i + 1);
+                let sample_name = Path::new(file)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&default_name);
+                
+                println!("Processing sample: {}", sample_name);
+                
+                // Parse the report and add it to the matrix with proper error handling
+                let (report, _) = krk_parser::parse_kraken2_report(file)
+                    .map_err(|e| format!("Error parsing Kraken2 report file '{}': {}", file, e))?;
+                matrix.add_sample(&report, sample_name, args.min_abundance, args.normalize);
+            }
 
-    // Convert counts to proportions (default behavior unless --absolute-counts is specified)
-    let convert_to_proportions = args.proportions || !args.absolute_counts;
-    if convert_to_proportions && !args.normalize {
-        matrix.transform_to_proportions();
-    }
+            // Convert counts to proportions (default behavior unless --absolute-counts is specified)
+            let convert_to_proportions = args.proportions || !args.absolute_counts;
+            if convert_to_proportions && !args.normalize {
+                matrix.transform_to_proportions();
+            }
 
-    // Generate the abundance matrix in TSV format
-    match matrix.write_matrix(&args.output) {
-        Ok(_) => println!("Abundance matrix successfully generated in: {}", args.output),
-        Err(e) => return Err(format!("Error generating abundance matrix: {}", e).into()),
+            // Generate the abundance matrix in TSV format
+            match matrix.write_matrix(&args.output) {
+                Ok(_) => println!("Abundance matrix successfully generated in: {}", args.output),
+                Err(e) => return Err(format!("Error generating abundance matrix: {}", e).into()),
+            }
+        },
+        "biom" => {
+            // Process each input file and create BIOM tables
+            for (i, file) in args.input.iter().enumerate() {
+                let default_name = format!("sample_{}", i + 1);
+                let sample_name = Path::new(file)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or(&default_name);
+                
+                println!("Processing sample: {}", sample_name);
+                
+                // Parse the report
+                let (report, _) = krk_parser::parse_kraken2_report(file)
+                    .map_err(|e| format!("Error parsing Kraken2 report file '{}': {}", file, e))?;
+                
+                // Create BIOM table
+                let biom_table = BiomTable::from_kraken_report(&report, sample_name, args.normalize);
+                
+                // Write BIOM output
+                match biom_table.write_json(&args.output) {
+                    Ok(_) => println!("BIOM format output successfully generated in: {}", args.output),
+                    Err(e) => return Err(format!("Error generating BIOM output: {}", e).into()),
+                }
+            }
+        },
+        _ => return Err(format!("Error: Unsupported output format '{}'. Use 'tsv' or 'biom'.", args.format).into()),
     }
     
     Ok(())
